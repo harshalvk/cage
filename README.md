@@ -84,7 +84,7 @@ Cage exposes a REST API that manages the lifecycle of sandboxes. Each sandbox cu
 ### Installation
 
 ```bash
-git clone https://github.com/<your-username>/cage.git
+git clone https://github.com/harshalvk/cage.git
 cd cage
 go mod tidy
 cp .env.example .env   # fill in real values
