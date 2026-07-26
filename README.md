@@ -5,6 +5,7 @@
 [![CI](https://github.com/Harshalvk/cage/actions/workflows/ci.yml/badge.svg)](https://github.com/Harshalvk/cage/actions/workflows/ci.yml)
 [![Go Version](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go)](https://go.dev/)
 [![Docker](https://img.shields.io/badge/Docker-Image-2496ED?logo=docker&logoColor=white)](https://hub.docker.com/)
+[![API Docs](https://img.shields.io/badge/docs-API%20reference-blue)](https://harshalvk.github.io/cage/api/)
 
 </div>
 
@@ -95,6 +96,7 @@ cage/
 ├── lefthook.yml                      # pre-commit hooks (format, lint, build)
 └── Makefile                            # dev, lint, fmt, migrate, genkey, test targets
 ```
+
 `internal/` is Go-enforced: nothing outside this module can import it. `sdk/go` and `cli` are deliberately separate Go modules (each has its own `go.mod`) so the SDK can be imported independently without pulling in server-only dependencies like the Docker SDK or pgx.
 
 ## Architecture
@@ -159,21 +161,22 @@ The API will be available at `http://localhost:8080`.
 
 ### API Reference
 
-| Method | Endpoint | Description |
-|--------|----------|--------------|
-| GET | `/health` | Health check |
-| GET | `/templates` | List available sandbox templates |
-| POST | `/sandboxes` | Create a sandbox |
-| GET | `/sandboxes` | List sandboxes |
-| GET | `/sandboxes/{id}` | Get sandbox details |
-| DELETE | `/sandboxes/{id}` | Kill and remove a sandbox |
-| POST | `/sandboxes/{id}/exec` | Run a command inside a sandbox |
-| POST | `/sandboxes/{id}/files` | Write a file into a sandbox |
-| GET | `/sandboxes/{id}/files` | Read a file from a sandbox |
-| POST | `/sandboxes/{id}/pause` | Pause a running sandbox |
-| POST | `/sandboxes/{id}/resume` | Resume a paused sandbox |
-| GET | `/metrics` | Prometheus metrics |
-Full request/response schemas: [openapi.yaml](openapi.yaml).
+| Method | Endpoint                 | Description                      |
+| ------ | ------------------------ | -------------------------------- |
+| GET    | `/health`                | Health check                     |
+| GET    | `/templates`             | List available sandbox templates |
+| POST   | `/sandboxes`             | Create a sandbox                 |
+| GET    | `/sandboxes`             | List sandboxes                   |
+| GET    | `/sandboxes/{id}`        | Get sandbox details              |
+| DELETE | `/sandboxes/{id}`        | Kill and remove a sandbox        |
+| POST   | `/sandboxes/{id}/exec`   | Run a command inside a sandbox   |
+| POST   | `/sandboxes/{id}/files`  | Write a file into a sandbox      |
+| GET    | `/sandboxes/{id}/files`  | Read a file from a sandbox       |
+| POST   | `/sandboxes/{id}/pause`  | Pause a running sandbox          |
+| POST   | `/sandboxes/{id}/resume` | Resume a paused sandbox          |
+| GET    | `/metrics`               | Prometheus metrics               |
+
+Full request/response schemas: [openapi.yaml](openapi.yaml), or browse them at the [hosted API reference](https://harshalvk.github.io/cage/api/).
 
 ## Authentication
 

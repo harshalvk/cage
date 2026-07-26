@@ -49,3 +49,10 @@ jobs:
 
       - name: Run tests
         run: go test ./... -v -timeout 5m
+
+  lint-openapi:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lint OpenAPI spec
+        run: npx @redocly/cli lint ./docs/api/openapi.yaml
