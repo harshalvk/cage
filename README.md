@@ -5,7 +5,7 @@
 [![CI](https://github.com/Harshalvk/cage/actions/workflows/ci.yml/badge.svg)](https://github.com/Harshalvk/cage/actions/workflows/ci.yml)
 [![Go Version](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go)](https://go.dev/)
 [![Docker](https://img.shields.io/badge/Docker-Image-2496ED?logo=docker&logoColor=white)](https://hub.docker.com/)
-[![API Docs](https://img.shields.io/badge/docs-API%20reference-blue)](https://harshalvk.github.io/cage/api/)
+[![API Docs](https://img.shields.io/badge/docs-API%20reference-blue)](https://harshalvk.github.io/Cage/api/)
 
 </div>
 
