@@ -55,4 +55,4 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Lint OpenAPI spec
-        run: npx @redocly/cli lint openapi.yaml
+        run: npx @redocly/cli lint ./docs/api/openapi.yaml
