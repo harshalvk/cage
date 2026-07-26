@@ -178,6 +178,8 @@ The API will be available at `http://localhost:8080`.
 
 Full request/response schemas: [openapi.yaml](openapi.yaml), or browse them at the [hosted API reference](https://harshalvk.github.io/cage/api/).
 
+More runnable examples (curl, Go, Python): [examples/](examples/)
+
 ## Authentication
 
 All `/sandboxes` routes require an API key, passed as a Bearer token:

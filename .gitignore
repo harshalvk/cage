@@ -4,3 +4,5 @@ tmp
 FOR-ME.md
 .env.docker
 .vscode
+node_modules
+cage
