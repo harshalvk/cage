@@ -1,0 +1,21 @@
+name: Deploy Docs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'openapi.yaml'
+      - 'docs/api/**'
+
+jobs:
+  sync-spec:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Sync OpenAPI spec into docs folder
+        run: cp openapi.yaml docs/api/openapi.yaml
+      - name: Commit if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git diff --quiet docs/api/openapi.yaml || (git add docs/api/openapi.yaml && git commit -m "chore: sync openapi.yaml to docs site [skip ci]" && git push)
