@@ -27,42 +27,75 @@ curl -X POST http://localhost:8080/sandboxes
 
 ## Features
 
+**Core**
+
 - [x] Sandbox lifecycle management (create, list, get, delete)
-- [x] Docker-backed isolation
-- [x] Command execution inside sandboxes (stdout/stderr streaming)
+- [x] Docker-backed isolation, pluggable behind a `DockerClient` interface
+- [x] Command execution inside sandboxes, with streamed stdout/stderr demuxing
 - [x] File upload/download to/from sandboxes
-- [x] Persistent storage (Postgres) for sandbox metadata
-- [x] Idle/expiry-based sandbox cleanup
-- [x] API key authentication
-- [x] Custom sandbox templates
-- [x] Pause/resume support
-- [ ] Firecracker microVM backend (long-term goal)
+- [x] Pause / resume via container commit + recreate (frees memory, not just frozen in place)
+- [x] Custom sandbox templates (Python, Node, or your own image)
+- [x] Persistent storage (Postgres) for sandbox + API key metadata
+- [x] Idle/expiry-based cleanup (background reaper + startup reconciliation)
+      **Production readiness**
+- [x] API key authentication (hashed, never stored raw)
+- [x] Redis-backed caching for auth checks (fail-open on cache errors)
+- [x] Redis-backed rate limiting (token bucket, fail-open)
+- [x] Warm sandbox pool per template — cuts cold-start latency on creation
+- [x] Structured JSON logging (`slog`) + Prometheus metrics
+- [x] Graceful shutdown (drains in-flight requests on `SIGTERM`)
+- [x] Distributed locking — safe to run multiple replicas (no double-reaping)
+      **Developer experience**
+- [x] Go SDK (`sdk/go`) — typed client for every endpoint
+- [x] CLI (`cage`) — create, exec, files, pause/resume, all from your terminal
+- [x] Interactive TUI (`cage tui`) — live sandbox dashboard, Bubble Tea-based
+- [x] OpenAPI spec (`openapi.yaml`) documenting every route
+      **Not yet built**
+- [ ] Firecracker microVM backend (parked — see ADR 0012)
+- [ ] Hosted/browsable API docs site
+- [ ] CLI distribution via Homebrew/install script
 
 ## Project Structure
-```bash
+
+```
 cage/
 ├── cmd/
-│   ├── cage/           # main entrypoint — wires everything together and starts the HTTP server
-│   └── genkey/         # CLI to generate API keys
+│   ├── cage/              # main server entrypoint
+│   └── genkey/            # CLI to generate API keys
 ├── internal/
-│   ├── api/            # HTTP handlers + auth middleware
-│   ├── auth/            # API key generation & hashing
-│   ├── config/          # env var loading
-│   ├── db/               # migration runner (golang-migrate)
-│   ├── reaper/           # background job that kills expired sandboxes
-│   ├── reconcile/         # syncs DB state with actual Docker state on boot
-│   ├── sandbox/           # Docker SDK wrapper — create/exec/read/write files
-│   └── store/             # Postgres-backed sandbox + API key persistence
-├── migrations/            # golang-migrate SQL files (paired .up/.down)
-├── scripts/               # git hook scripts (e.g. commit-msg validation)
-├── .air.toml              # live reload config
-├── .env.example           # documents required env vars
-├── .golangci.yml          # linter config
-├── docker-compose.yml     # Postgres + Cage app stack
-├── Dockerfile             # multi-stage build for the app image
-├── lefthook.yml           # pre-commit/commit-msg hooks
-└── Makefile               # dev, lint, fmt, migrate, genkey commands
+│   ├── api/                # HTTP handlers, auth + rate-limit + metrics middleware
+│   ├── auth/                # API key generation & hashing
+│   ├── cache/                # Redis cache wrapper
+│   ├── config/                 # env var loading
+│   ├── db/                      # migration runner (golang-migrate)
+│   ├── lock/                     # Redis-backed distributed lock (leader election)
+│   ├── logging/                   # structured slog setup
+│   ├── metrics/                     # Prometheus metric definitions
+│   ├── pool/                          # sandbox pre-warming pool
+│   ├── ratelimit/                       # token bucket rate limiter
+│   ├── reaper/                           # background job: expire idle sandboxes
+│   ├── reconcile/                          # syncs DB state with Docker on boot
+│   ├── sandbox/                              # Docker SDK wrapper (create/exec/pause/files)
+│   └── store/                                  # Postgres-backed persistence
+├── sdk/
+│   └── go/                # cageclient — standalone Go module, the official SDK
+├── cli/
+│   ├── cmd/                # Cobra commands (sandbox, exec, files, login, tui)
+│   └── tui/                  # Bubble Tea interactive dashboard
+├── migrations/              # golang-migrate SQL files (paired .up/.down)
+├── scripts/                   # git hook scripts
+├── docs/
+│   └── adr/                     # Architecture Decision Records
+├── .github/
+│   ├── workflows/ci.yml            # lint, build, test on every push/PR
+│   └── CODEOWNERS
+├── openapi.yaml               # full API spec for every route
+├── docker-compose.yml           # Postgres + Redis + app, for local dev
+├── Dockerfile                     # multi-stage build for the server image
+├── lefthook.yml                      # pre-commit hooks (format, lint, build)
+└── Makefile                            # dev, lint, fmt, migrate, genkey, test targets
 ```
+`internal/` is Go-enforced: nothing outside this module can import it. `sdk/go` and `cli` are deliberately separate Go modules (each has its own `go.mod`) so the SDK can be imported independently without pulling in server-only dependencies like the Docker SDK or pgx.
 
 ## Architecture
 
@@ -84,7 +117,7 @@ Cage exposes a REST API that manages the lifecycle of sandboxes. Each sandbox cu
 ### Installation
 
 ```bash
-git clone https://github.com/<your-username>/cage.git
+git clone https://github.com/harshalvk/cage.git
 cd cage
 go mod tidy
 cp .env.example .env   # fill in real values
@@ -112,27 +145,35 @@ The API will be available at `http://localhost:8080`.
 
 ## Development
 
-| Command                      | Description                 |
-| ---------------------------- | --------------------------- |
-| `make dev`                   | Run with live reload (Air)  |
-| `make build`                 | Build the binary            |
-| `make lint`                  | Run golangci-lint           |
-| `make fmt`                   | Format code                 |
-| `make migrate-up`            | Apply DB migrations         |
-| `make migrate-down`          | Roll back last migration    |
-| `make migrate-create name=X` | Create a new migration pair |
-| `make test`                  | Run tests                   |
-| `make genkey name=X` | Generate a new API key labeled X |
+| Command                      | Description                      |
+| ---------------------------- | -------------------------------- |
+| `make dev`                   | Run with live reload (Air)       |
+| `make build`                 | Build the binary                 |
+| `make lint`                  | Run golangci-lint                |
+| `make fmt`                   | Format code                      |
+| `make migrate-up`            | Apply DB migrations              |
+| `make migrate-down`          | Roll back last migration         |
+| `make migrate-create name=X` | Create a new migration pair      |
+| `make test`                  | Run tests                        |
+| `make genkey name=X`         | Generate a new API key labeled X |
 
 ### API Reference
 
-| Method | Endpoint          | Description               |
-| ------ | ----------------- | ------------------------- |
-| GET    | `/health`         | Health check              |
-| POST   | `/sandboxes`      | Create a new sandbox      |
-| GET    | `/sandboxes`      | List all sandboxes        |
-| GET    | `/sandboxes/{id}` | Get sandbox details       |
+| Method | Endpoint | Description |
+|--------|----------|--------------|
+| GET | `/health` | Health check |
+| GET | `/templates` | List available sandbox templates |
+| POST | `/sandboxes` | Create a sandbox |
+| GET | `/sandboxes` | List sandboxes |
+| GET | `/sandboxes/{id}` | Get sandbox details |
 | DELETE | `/sandboxes/{id}` | Kill and remove a sandbox |
+| POST | `/sandboxes/{id}/exec` | Run a command inside a sandbox |
+| POST | `/sandboxes/{id}/files` | Write a file into a sandbox |
+| GET | `/sandboxes/{id}/files` | Read a file from a sandbox |
+| POST | `/sandboxes/{id}/pause` | Pause a running sandbox |
+| POST | `/sandboxes/{id}/resume` | Resume a paused sandbox |
+| GET | `/metrics` | Prometheus metrics |
+Full request/response schemas: [openapi.yaml](openapi.yaml).
 
 ## Authentication
 
