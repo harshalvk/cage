@@ -24,3 +24,12 @@ Use GoReleaser, triggered by CI on `cli/v*` tags (a prefixed tag scheme, since t
 - Both tap/bucket repos require their own scoped GitHub tokens (`HOMEBREW_TAP_GITHUB_TOKEN`, `SCOOP_BUCKET_GITHUB_TOKEN`) stored as secrets on the main repo — this is additional credential surface to maintain and rotate compared to a single-repo release process, though each token is scoped narrowly to only its respective tap/bucket repo.
 - The `cli/v*` tag prefix (rather than a bare `v*`) commits to a versioning scheme where the CLI, SDK, and server can eventually be tagged and released independently of one another. This adds a small amount of tagging discipline (remembering the prefix) in exchange for avoiding ambiguity later about what a given version number refers to.
 - The fallback install script (`install.sh`) uses an unauthenticated `curl | bash` pattern, which is a known supply-chain trust concern — the script currently does not verify the downloaded binary against the checksums GoReleaser already publishes. Adding checksum verification to the script is a known, not-yet-addressed follow-up before treating it as a fully trustworthy distribution path.
+
+## Update — 2026-07-20
+
+The `cli/v*` prefixed tag scheme described above required GoReleaser Pro's
+`monorepo` feature to parse correctly; the free/OSS version cannot strip a
+path-style prefix before semver parsing. Switched to plain `v*` tags. Since
+this repository currently only has one GoReleaser-managed release target
+(the CLI), this is not a practical loss — revisit if/when the SDK or server
+need independent tagged releases.
