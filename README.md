@@ -143,6 +143,27 @@ make migrate-up
 make dev    # live-reloading dev server
 ```
 
+### Install the CLI
+
+**macOS/Linux (Homebrew):**
+
+```bash
+brew install harshalvk/cage/cage
+```
+
+**Windows (Scoop):**
+
+```powershell
+scoop bucket add cage https://github.com/harshalvk/cage
+scoop install cage
+```
+
+**Any platform (install script):**
+
+```bash
+curl -sSL https://raw.githubusercontent.com/harshalvk/cage/master/install.sh | bash
+```
+
 The API will be available at `http://localhost:8080`.
 
 ## Development
