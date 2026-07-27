@@ -6,3 +6,4 @@ FOR-ME.md
 .vscode
 node_modules
 cage
+dist
