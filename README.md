@@ -28,8 +28,9 @@ curl -X POST http://localhost:8080/sandboxes
 
 ## Features
 
-**Core**
+## Features
 
+**Core**
 - [x] Sandbox lifecycle management (create, list, get, delete)
 - [x] Docker-backed isolation, pluggable behind a `DockerClient` interface
 - [x] Command execution inside sandboxes, with streamed stdout/stderr demuxing
@@ -38,7 +39,8 @@ curl -X POST http://localhost:8080/sandboxes
 - [x] Custom sandbox templates (Python, Node, or your own image)
 - [x] Persistent storage (Postgres) for sandbox + API key metadata
 - [x] Idle/expiry-based cleanup (background reaper + startup reconciliation)
-      **Production readiness**
+  
+**Production readiness**
 - [x] API key authentication (hashed, never stored raw)
 - [x] Redis-backed caching for auth checks (fail-open on cache errors)
 - [x] Redis-backed rate limiting (token bucket, fail-open)
@@ -46,64 +48,70 @@ curl -X POST http://localhost:8080/sandboxes
 - [x] Structured JSON logging (`slog`) + Prometheus metrics
 - [x] Graceful shutdown (drains in-flight requests on `SIGTERM`)
 - [x] Distributed locking — safe to run multiple replicas (no double-reaping)
-      **Developer experience**
+
+**Developer experience**
+
 - [x] Go SDK (`sdk/go`) — typed client for every endpoint
-- [x] CLI (`cage`) — create, exec, files, pause/resume, all from your terminal
-- [x] Interactive TUI (`cage tui`) — live sandbox dashboard, Bubble Tea-based
-- [x] OpenAPI spec (`openapi.yaml`) documenting every route
-      **Not yet built**
+- [x] CLI (`cage`) — create, exec, files, pause/resume, TUI, all from your terminal
+- [x] Interactive TUI (`cage tui`) — live sandbox dashboard, Bubble Tea-based, animated splash screen
+- [x] OpenAPI spec (`openapi.yaml`) + hosted, browsable API reference (Scalar + GitHub Pages)
+- [x] Runnable examples in curl, Go, Python, and TypeScript
+- [x] CLI distribution — Homebrew (macOS/Linux), Scoop (Windows), and a fallback install script
+**Not yet built**
 - [ ] Firecracker microVM backend (parked — see ADR 0012)
-- [ ] Hosted/browsable API docs site
-- [ ] CLI distribution via Homebrew/install script
-
-## Project Structure
-
-```
-cage/
-├── cmd/
-│   ├── cage/              # main server entrypoint
-│   └── genkey/            # CLI to generate API keys
-├── internal/
-│   ├── api/                # HTTP handlers, auth + rate-limit + metrics middleware
-│   ├── auth/                # API key generation & hashing
-│   ├── cache/                # Redis cache wrapper
-│   ├── config/                 # env var loading
-│   ├── db/                      # migration runner (golang-migrate)
-│   ├── lock/                     # Redis-backed distributed lock (leader election)
-│   ├── logging/                   # structured slog setup
-│   ├── metrics/                     # Prometheus metric definitions
-│   ├── pool/                          # sandbox pre-warming pool
-│   ├── ratelimit/                       # token bucket rate limiter
-│   ├── reaper/                           # background job: expire idle sandboxes
-│   ├── reconcile/                          # syncs DB state with Docker on boot
-│   ├── sandbox/                              # Docker SDK wrapper (create/exec/pause/files)
-│   └── store/                                  # Postgres-backed persistence
-├── sdk/
-│   └── go/                # cageclient — standalone Go module, the official SDK
-├── cli/
-│   ├── cmd/                # Cobra commands (sandbox, exec, files, login, tui)
-│   └── tui/                  # Bubble Tea interactive dashboard
-├── migrations/              # golang-migrate SQL files (paired .up/.down)
-├── scripts/                   # git hook scripts
-├── docs/
-│   └── adr/                     # Architecture Decision Records
-├── .github/
-│   ├── workflows/ci.yml            # lint, build, test on every push/PR
-│   └── CODEOWNERS
-├── openapi.yaml               # full API spec for every route
-├── docker-compose.yml           # Postgres + Redis + app, for local dev
-├── Dockerfile                     # multi-stage build for the server image
-├── lefthook.yml                      # pre-commit hooks (format, lint, build)
-└── Makefile                            # dev, lint, fmt, migrate, genkey, test targets
-```
-
-`internal/` is Go-enforced: nothing outside this module can import it. `sdk/go` and `cli` are deliberately separate Go modules (each has its own `go.mod`) so the SDK can be imported independently without pulling in server-only dependencies like the Docker SDK or pgx.
+- [ ] Official TypeScript/Python SDKs (examples currently use raw HTTP)
+- [ ] Checksum verification in the install script
 
 ## Architecture
 
 Cage exposes a REST API that manages the lifecycle of sandboxes. Each sandbox currently maps 1:1 to a Docker container, with an in-memory (soon Postgres-backed) store tracking metadata.
 
 <img width="4415" height="3042" alt="image" src="https://github.com/user-attachments/assets/20dfdd74-b457-4456-a145-b16c73c708f2" />
+
+See [docs/adr](docs/adr/) for the reasoning behind each major architectural decision.
+
+## Project Structure
+
+```
+cage/
+├── cmd/
+│   ├── cage/                 # main server entrypoint
+│   └── genkey/               # CLI to generate API keys
+├── internal/
+│   ├── api/                  # HTTP handlers, auth + rate-limit + metrics middleware
+│   │  └── openapi.yaml       # full API spec for every route
+│   ├── auth/                 # API key generation & hashing
+│   ├── cache/                # Redis cache wrapper
+│   ├── config/               # env var loading
+│   ├── db/                   # migration runner (golang-migrate)
+│   ├── lock/                 # Redis-backed distributed lock (leader election)
+│   ├── logging/              # structured slog setup
+│   ├── metrics/              # Prometheus metric definitions
+│   ├── pool/                 # sandbox pre-warming pool
+│   ├── ratelimit/            # token bucket rate limiter
+│   ├── reaper/               # background job: expire idle sandboxes
+│   ├── reconcile/            # syncs DB state with Docker on boot
+│   ├── sandbox/              # Docker SDK wrapper (create/exec/pause/files)
+│   └── store/                # Postgres-backed persistence
+├── sdk/
+│   └── go/                   # cageclient — standalone Go module, the official SDK
+├── cli/
+│   ├── cmd/                  # Cobra commands (sandbox, exec, files, login, tui)
+│   └── tui/                  # Bubble Tea interactive dashboard
+├── migrations/               # golang-migrate SQL files (paired .up/.down)
+├── scripts/                  # git hook scripts
+├── docs/
+│   └── adr/                  # Architecture Decision Records
+├── .github/
+│   ├── workflows/ci.yml      # lint, build, test on every push/PR
+│   └── CODEOWNERS
+├── docker-compose.yml        # Postgres + Redis + app, for local dev
+├── Dockerfile                # multi-stage build for the server image
+├── lefthook.yml              # pre-commit hooks (format, lint, build)
+└── Makefile                  # dev, lint, fmt, migrate, genkey, test targets
+```
+
+`internal/` is Go-enforced: nothing outside this module can import it. `sdk/go` and `cli` are deliberately separate Go modules (each has its own `go.mod`) so the SDK can be imported independently without pulling in server-only dependencies like the Docker SDK or pgx.
 
 ## Getting Started
 
@@ -116,69 +124,81 @@ Cage exposes a REST API that manages the lifecycle of sandboxes. Each sandbox cu
 - [golangci-lint](https://golangci-lint.run/) (optional, for linting)
 - [Lefthook](https://github.com/evilmartians/lefthook) (optional, for git hooks)
 
-### Installation
+### Run the server
 
 ```bash
 git clone https://github.com/harshalvk/cage.git
 cd cage
 go mod tidy
-cp .env.example .env   # fill in real values
-make setup             # installs git hooks
-make migrate-up         # apply DB schema
+cp .env.example .env      # fill in real values
+make setup                # installs git hooks
+docker compose up -d cage-postgres cage-redis
+make migrate-up
+make dev                   # live-reloading server on :8080
 ```
 
-### Running
-
-**Option A - Full stack via docker compose (postgres + cage, containerized):**
+Or the full containerized stack:
 
 ```bash
 docker compose up --build
 ```
 
-**Option B - Local dev (golang on host, postgres in docker, live reload):**
+### Use the CLI
 
 ```bash
-docker compose up -d cage-postgres
-make migrate-up
-make dev    # live-reloading dev server
+cd cli
+go build -o cage .
+
+./cage login --api-key=<key-from-make-genkey>
+./cage sandbox create --template python-3.12
+./cage sandbox ls
+./cage exec <id> -- python3 --version
+./cage tui              # interactive dashboard
+
 ```
 
 ### Install the CLI
 
 **macOS/Linux (Homebrew):**
-
-```bash
+\`\`\`bash
 brew install harshalvk/cage/cage
-```
+\`\`\`
 
 **Windows (Scoop):**
-
-```powershell
-scoop bucket add cage https://github.com/harshalvk/cage
+\`\`\`powershell
+scoop bucket add cage https://github.com/harshalvk/scoop-cage
 scoop install cage
-```
+\`\`\`
 
 **Any platform (install script):**
+\`\`\`bash
+curl -sSL https://raw.githubusercontent.com/harshalvk/cage/main/install.sh | bash
+\`\`\`
+
+### Use the SDK
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/harshalvk/cage/master/install.sh | bash
+go get github.com/harshalvk/cage/sdk/go
 ```
 
-The API will be available at `http://localhost:8080`.
+```go
+client := cageclient.New("http://localhost:8080", "your-api-key")
+sb, _ := client.CreateSandbox(ctx, cageclient.CreateSandboxOptions{Template: "python-3.12"})
+result, _ := client.Exec(ctx, sb.ID, []string{"python3", "-c", "print('hello')"})
+```
 
-## Development
+## Authentication
 
-| Command                      | Description                      |
-| ---------------------------- | -------------------------------- |
-| `make dev`                   | Run with live reload (Air)       |
-| `make build`                 | Build the binary                 |
-| `make lint`                  | Run golangci-lint                |
-| `make fmt`                   | Format code                      |
-| `make migrate-up`            | Apply DB migrations              |
-| `make migrate-down`          | Roll back last migration         |
-| `make migrate-create name=X` | Create a new migration pair      |
-| `make test`                  | Run tests                        |
-| `make genkey name=X`         | Generate a new API key labeled X |
+All `/sandboxes` routes require an API key as a Bearer token. `/health` and `/templates` are public.
+
+```bash
+make genkey name=local-dev
+```
+
+```bash
+curl -X POST http://localhost:8080/sandboxes \
+  -H "Authorization: Bearer <your-api-key>"
+```
 
 ### API Reference
 
@@ -199,23 +219,21 @@ The API will be available at `http://localhost:8080`.
 
 Full request/response schemas: [openapi.yaml](openapi.yaml), or browse them at the [hosted API reference](https://harshalvk.github.io/cage/api/).
 
+## Development
+
+| Command                      | Description                      |
+| ---------------------------- | -------------------------------- |
+| `make dev`                   | Run with live reload (Air)       |
+| `make build`                 | Build the binary                 |
+| `make lint`                  | Run golangci-lint                |
+| `make fmt`                   | Format code                      |
+| `make migrate-up`            | Apply DB migrations              |
+| `make migrate-down`          | Roll back last migration         |
+| `make migrate-create name=X` | Create a new migration pair      |
+| `make test`                  | Run tests                        |
+| `make genkey name=X`         | Generate a new API key labeled X |
+
 More runnable examples (curl, Go, Python): [examples/](examples/)
-
-## Authentication
-
-All `/sandboxes` routes require an API key, passed as a Bearer token:
-
-```bash
-curl -X POST http://localhost:8080/sandboxes -H "Authorization: Bearer <your-api-key>"
-```
-
-`/health` remains public and requires no key
-
-### Generating a key
-
-```bash
-make genkey name=local-dev
-```
 
 This prints the raw key once - it is never shown again and only its hash is stored
 
