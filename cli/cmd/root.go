@@ -18,6 +18,17 @@ var rootCmd = &cobra.Command{
 	Long:  "Cage is a CLI for creating, running commands in, and managing isolated Docker-backed sandboxes.",
 }
 
+var (
+	buildVersion = "dev"
+	buildCommit  = "none"
+)
+
+func SetVersionInfo(version, commit string) {
+	buildVersion = version
+	buildCommit = commit
+	rootCmd.Version = fmt.Sprintf("%s (%s)", version, commit)
+}
+
 func Execute() {
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "Error: ", err)
