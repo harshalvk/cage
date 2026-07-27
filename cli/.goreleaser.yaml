@@ -1,0 +1,67 @@
+version: 2
+
+project_name: cage
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: cage
+    main: ./main.go
+    binary: cage
+    dir: .
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}}
+
+archives:
+  - id: cage-archive
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Os }}_{{ .Arch }}
+
+checksum:
+  name_template: "checksums.txt"
+
+release:
+  github:
+    owner: harshalvk
+    name: cage
+
+brews:
+  - name: cage
+    repository:
+      owner: harshalvk
+      name: homebrew-cage
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    directory: Formula
+    homepage: "https://github.com/harshalvk/cage"
+    description: "CLI for Cage — self-hostable sandbox infrastructure"
+    license: "MIT"
+    test: |
+      system "#{bin}/cage --help"
+    install: |
+      bin.install "cage"
+
+scoops:
+  - name: cage
+    repository:
+      owner: harshalvk
+      name: scoop-cage
+      token: "{{ .Env.SCOOP_BUCKET_GITHUB_TOKEN }}"
+    directory: bucket
+    homepage: "https://github.com/harshalvk/cage"
+    description: "CLI for Cage — self-hostable sandbox infrastructure"
+    license: "MIT"
