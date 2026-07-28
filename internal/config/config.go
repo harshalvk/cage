@@ -16,6 +16,7 @@ type Config struct {
 	RedisURL       string
 	ReaperInterval time.Duration
 	SandboxTTL     time.Duration
+	PausedTTL      time.Duration
 	WarmPoolSize   int
 	LogLevel       string
 }
@@ -53,6 +54,12 @@ func LoadConfig() (*Config, error) {
 		return nil, fmt.Errorf("invalid WARM_POOL_SIZE: %w", err)
 	}
 	cfg.WarmPoolSize = warmPoolSize
+
+	pausedTTL, err := time.ParseDuration(getEnv("PAUSED_SANDBOX_TTL", "24h"))
+	if err != nil {
+		return nil, fmt.Errorf("invalid PAUSED_SANDBOX_TTL: %w", err)
+	}
+	cfg.PausedTTL = pausedTTL
 
 	return cfg, nil
 }
