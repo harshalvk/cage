@@ -33,3 +33,9 @@ path-style prefix before semver parsing. Switched to plain `v*` tags. Since
 this repository currently only has one GoReleaser-managed release target
 (the CLI), this is not a practical loss — revisit if/when the SDK or server
 need independent tagged releases.
+
+## Update — 2026-07-20
+
+install.sh now downloads checksums.txt alongside the release archive and
+verifies the SHA-256 before installing, refusing to proceed on any mismatch
+or missing entry. The previously flagged "blind curl | bash" gap is closed.
