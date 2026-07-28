@@ -25,3 +25,9 @@ Implement Option B: pause commits the container to an image and destroys the con
 - A committed image that is never resumed (an abandoned paused sandbox) currently has no automatic cleanup — the reaper only expires `running` sandboxes, not `paused` ones. This is a known gap and tracked as follow-up work (extending the reaper to also expire and garbage-collect long-paused sandboxes and their images).
 - `container_id` is empty while a sandbox is paused (no live container exists); handlers for exec/read-file/write-file explicitly reject requests against non-running sandboxes with `409 Conflict` rather than failing with a confusing Docker-level "no such container" error.
 - This decision can be revisited if Option A's speed becomes more important than Option B's memory efficiency for a given deployment — the two are not mutually exclusive, and a future ADR could introduce Option A as a fast-pause mode alongside this for short-lived pauses.
+
+## Update — 2026-07-21
+
+The reaper now also expires paused sandboxes (via PAUSED_SANDBOX_TTL,
+default 24h) and removes their committed image, closing the disk-leak gap
+noted above for abandoned pauses that are never resumed.

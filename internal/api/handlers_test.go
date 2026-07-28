@@ -18,7 +18,7 @@ import (
 
 func TestListSandboxes_EmptyReturnsEmptyArray(t *testing.T) {
 	st := setupTestStore(t)
-	a := NewAPI(nil, st, 0, nil)
+	a := NewAPI(nil, st, 0, 0, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/sandboxes", nil)
 	w := httptest.NewRecorder()
@@ -39,7 +39,7 @@ func TestListSandboxes_EmptyReturnsEmptyArray(t *testing.T) {
 
 func TestGetSandbox_NotFound(t *testing.T) {
 	st := setupTestStore(t)
-	a := NewAPI(nil, st, 0, nil)
+	a := NewAPI(nil, st, 0, 0, nil)
 
 	r := chi.NewRouter()
 	r.Get("/sandboxes/{id}", a.GetSandbox)
@@ -61,7 +61,7 @@ func TestExecCommand_MissingCmd(t *testing.T) {
 	sb := &store.Sandbox{ID: sbID, ContainerID: "c-1", Status: store.StatusRunning}
 	require.NoError(t, st.Save(ctx, sb))
 
-	a := NewAPI(nil, st, 0, nil)
+	a := NewAPI(nil, st, 0, 0, nil)
 
 	r := chi.NewRouter()
 	r.Post("/sandboxes/{id}/exec", a.ExecCommand)
@@ -77,7 +77,7 @@ func TestExecCommand_MissingCmd(t *testing.T) {
 
 func TestGetSandbox_MalformedID(t *testing.T) {
 	st := setupTestStore(t)
-	a := NewAPI(nil, st, 0, nil)
+	a := NewAPI(nil, st, 0, 0, nil)
 
 	r := chi.NewRouter()
 	r.Get("/sandboxes/{id}", a.GetSandbox)
@@ -98,7 +98,7 @@ func TestPauseSandbox_WrongStatus(t *testing.T) {
 	sb := &store.Sandbox{ID: id, ContainerID: "c-1", Status: store.StatusPaused}
 	require.NoError(t, st.Save(ctx, sb))
 
-	a := NewAPI(nil, st, 0, nil)
+	a := NewAPI(nil, st, 0, 0, nil)
 	r := chi.NewRouter()
 	r.Post("/sandboxes/{id}/pause", a.PauseSandbox)
 
@@ -115,7 +115,7 @@ func TestResumeSandbox_WrongStatus(t *testing.T) {
 	sb := &store.Sandbox{ID: id, ContainerID: "c-1", Status: store.StatusRunning}
 	require.NoError(t, st.Save(ctx, sb))
 
-	a := NewAPI(nil, st, 0, nil)
+	a := NewAPI(nil, st, 0, 0, nil)
 	r := chi.NewRouter()
 	r.Post("/sandboxes/{id}/resume", a.ResumeSandbox)
 
@@ -128,7 +128,7 @@ func TestResumeSandbox_WrongStatus(t *testing.T) {
 
 func TestResumeSandbox_NotFound(t *testing.T) {
 	st := setupTestStore(t)
-	a := NewAPI(nil, st, 0, nil)
+	a := NewAPI(nil, st, 0, 0, nil)
 
 	id := uuid.NewString()
 	r := chi.NewRouter()

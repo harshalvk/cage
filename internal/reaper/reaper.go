@@ -53,21 +53,51 @@ func (r *Reaper) Start(ctx context.Context) {
 
 func (r *Reaper) reap(ctx context.Context) {
 	expired, err := r.store.ListExpired(ctx)
-	metrics.SandboxesReaped.Inc()
 	if err != nil {
 		slog.Error("reaper: failed to list expired sandboxes: %v", "error", err)
 		return
 	}
 
 	for _, sb := range expired {
-		slog.Info("reaper: killing expired sandbox %s", "sandbox_id", sb.ID)
-		if err := r.sm.KillSandbox(ctx, sb.ContainerID); err != nil {
-			slog.Error("reaper: failed to kill container for sandbox %s: %v", "sandbox_id", sb.ID, "error", err)
-			continue
-		}
-
-		if err := r.store.Delete(ctx, sb.ID); err != nil {
-			slog.Error("reaper: failed to delete sandbox %s from store: %v", "sandbox_id", sb.ID, "error", err)
+		switch sb.Status {
+		case store.StatusRunning:
+			r.reapRunning(ctx, sb)
+		case store.StatusPaused:
+			r.reapPaused(ctx, sb)
 		}
 	}
+}
+
+func (r *Reaper) reapRunning(ctx context.Context, sb *store.Sandbox) {
+	slog.Info("reaper: killing expired running sandbox", "sandbox_id", sb.ID)
+	if err := r.sm.KillSandbox(ctx, sb.ContainerID); err != nil {
+		slog.Error("reaper: failed to kill container", "sandbox_id", sb.ID, "error", err)
+		return // don't delete the db record if the kill failed; retry next tick
+	}
+	if err := r.store.Delete(ctx, sb.ID); err != nil {
+		slog.Error("reaper: failed to delete sandbox record", "sandbox_id", sb.ID, "error", err)
+		return
+	}
+	metrics.SandboxesReaped.Inc()
+}
+
+func (r *Reaper) reapPaused(ctx context.Context, sb *store.Sandbox) {
+	slog.Info("reaper: cleaning up abandoned paused sandbox", "sanbox_id", sb.ID)
+
+	if sb.PausedImageID == nil {
+		// shouldn't happen, but don't leak the db record over a data inconcsistency
+		slog.Error("reaper: paused sandbox has no image id, deleting record anyway", "sandbox_id", sb.ID)
+		_ = r.store.Delete(ctx, sb.ID)
+		return
+	}
+
+	if err := r.sm.RemoveImage(ctx, *sb.PausedImageID); err != nil {
+		slog.Error("reaper: failed to remove paused image", "sandbox_id", sb.ID, "image_id", *sb.PausedImageID, "error", err)
+		return // retyr next tick, same fail-safe ordering as reapRunning
+	}
+	if err := r.store.Delete(ctx, sb.ID); err != nil {
+		slog.Error("reaper: failed to delete sandbox record", "sandbox_id", sb.ID, "error", err)
+		return
+	}
+	metrics.SandboxesReaped.Inc()
 }

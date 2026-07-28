@@ -104,7 +104,7 @@ func run() error {
 
 	limiter := ratelimit.NewLimiter(c.RawClient(), 20, 5)
 
-	a := api.NewAPI(sm, st, cfg.SandboxTTL, warmPool)
+	a := api.NewAPI(sm, st, cfg.SandboxTTL, cfg.PausedTTL, warmPool)
 
 	r := chi.NewRouter()
 	r.Use(middleware.Recoverer)
