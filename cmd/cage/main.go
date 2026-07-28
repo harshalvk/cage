@@ -120,7 +120,10 @@ func run() error {
 	})
 
 	r.Get("/templates", a.ListTemplates)
-	r.Handle("/metrics", promhttp.Handler())
+	r.Route("/metrics", func(r chi.Router) {
+		r.Use(api.MetricsAuthMiddleware(cfg.MetricsToken))
+		r.Handle("/", promhttp.Handler())
+	})
 
 	r.Route("/sandboxes", func(r chi.Router) {
 		r.Use(api.AuthMiddleware(st, c))
