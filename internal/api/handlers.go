@@ -19,6 +19,7 @@ type API struct {
 	sm         *sandbox.SandboxManager
 	store      *store.Store
 	sandboxTTL time.Duration
+	pausedTTL  time.Duration
 	pool       *pool.Pool
 }
 
@@ -34,8 +35,8 @@ type CreateSandboxRequest struct {
 	Template string `json:"template"`
 }
 
-func NewAPI(sm *sandbox.SandboxManager, store *store.Store, sandboxTTL time.Duration, p *pool.Pool) *API {
-	return &API{sm: sm, store: store, sandboxTTL: sandboxTTL, pool: p}
+func NewAPI(sm *sandbox.SandboxManager, store *store.Store, sandboxTTL time.Duration, pausedTTL time.Duration, p *pool.Pool) *API {
+	return &API{sm: sm, store: store, sandboxTTL: sandboxTTL, pausedTTL: pausedTTL, pool: p}
 }
 
 func (a *API) CreateSandbox(w http.ResponseWriter, r *http.Request) {
@@ -306,6 +307,7 @@ func (a *API) PauseSandbox(w http.ResponseWriter, r *http.Request) {
 	sb.Status = store.StatusPaused
 	sb.PausedImageID = &imageID
 	sb.ContainerID = "" // this is consider as no live contaier while paused
+	sb.ExpiresAt = timeNow().Add(a.pausedTTL)
 
 	if err := a.store.Save(r.Context(), sb); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -338,6 +340,10 @@ func (a *API) ResumeSandbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if sb.PausedImageID == nil {
+		http.Error(w, "sandbox is paued but has no associated image", http.StatusInternalServerError)
+		return
+	}
 	oldImageID := *sb.PausedImageID
 
 	newContainerID, err := a.sm.ResumeSandbox(r.Context(), oldImageID)
