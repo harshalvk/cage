@@ -1,5 +1,5 @@
 <div align="center">
-<img width="180" height="180" alt="image" src="https://github.com/user-attachments/assets/a1123aca-8933-4a8e-b48f-7afa133b8425" />
+<img width="120" height="120" alt="image" src="https://github.com/user-attachments/assets/a1123aca-8933-4a8e-b48f-7afa133b8425" />
 
 # Cage
 
