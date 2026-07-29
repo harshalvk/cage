@@ -19,6 +19,7 @@ type Config struct {
 	PausedTTL      time.Duration
 	WarmPoolSize   int
 	LogLevel       string
+	MetricsToken   string
 }
 
 func LoadConfig() (*Config, error) {
@@ -32,6 +33,7 @@ func LoadConfig() (*Config, error) {
 		RedisURL:    getEnv("REDIS_URL", "redis://localhost:6379"),
 	}
 	cfg.LogLevel = getEnv("LOG_LEVEL", "info")
+	cfg.MetricsToken = getEnv("METRICS_TOKEN", "")
 
 	if cfg.DatabaseURL == "" {
 		return nil, fmt.Errorf("DATABASE_URL is required")
