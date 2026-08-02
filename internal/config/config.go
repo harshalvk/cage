@@ -11,15 +11,20 @@ import (
 )
 
 type Config struct {
-	Port           string
-	DatabaseURL    string
-	RedisURL       string
-	ReaperInterval time.Duration
-	SandboxTTL     time.Duration
-	PausedTTL      time.Duration
-	WarmPoolSize   int
-	LogLevel       string
-	MetricsToken   string
+	Port                 string
+	DatabaseURL          string
+	RedisURL             string
+	ReaperInterval       time.Duration
+	SandboxTTL           time.Duration
+	PausedTTL            time.Duration
+	WarmPoolSize         int
+	LogLevel             string
+	MetricsToken         string
+	IsolationBackend     string // docker or firecracker
+	FirecrackerBin       string
+	FirecrackerKernel    string
+	FirecrackerRootfsDir string
+	FirecrackerRunDir    string
 }
 
 func LoadConfig() (*Config, error) {
@@ -34,6 +39,16 @@ func LoadConfig() (*Config, error) {
 	}
 	cfg.LogLevel = getEnv("LOG_LEVEL", "info")
 	cfg.MetricsToken = getEnv("METRICS_TOKEN", "")
+	cfg.IsolationBackend = getEnv("ISOLATION_BACKEND", "docker")
+	cfg.FirecrackerBin = getEnv("FIRECRACKER_BIN", "/usr/local/bin/firecracker")
+	cfg.FirecrackerKernel = getEnv("FIRECRACKER_KERNEL", "/var/lib/cage/vmlinux.bin")
+	cfg.FirecrackerRootfsDir = getEnv("FIRECRACKER_ROOTFS_DIR", "/var/lib/cage/rootfs-base")
+	cfg.FirecrackerRunDir = getEnv("FIRECRACKER_RUN_DIR", "/var/lib/cage/fc-run")
+
+	cfg.IsolationBackend = getEnv("ISOLATION_BACKEND", "docker")
+	if cfg.IsolationBackend != "docker" && cfg.IsolationBackend != "firecracker" {
+		return nil, fmt.Errorf("ISOLATION_BACKEND must be 'docker' or 'firecracker',  got %q", cfg.IsolationBackend)
+	}
 
 	if cfg.DatabaseURL == "" {
 		return nil, fmt.Errorf("DATABASE_URL is required")
