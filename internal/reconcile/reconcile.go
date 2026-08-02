@@ -2,17 +2,18 @@ package reconcile
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 
+	"github.com/harshalvk/cage/internal/backend"
 	"github.com/harshalvk/cage/internal/lock"
-	"github.com/harshalvk/cage/internal/sandbox"
 	"github.com/harshalvk/cage/internal/store"
 )
 
-func Reconcile(ctx context.Context, sm *sandbox.SandboxManager, st *store.Store, l *lock.DistributedLock) error {
+func Reconcile(ctx context.Context, sb backend.SandboxBackend, st *store.Store, l *lock.DistributedLock) error {
 	acquired, err := l.TryAcquire(ctx)
 	if err != nil {
-		return err
+		return fmt.Errorf("reconcile: lock acquire failed: %w", err)
 	}
 	if !acquired {
 		slog.Info("reconcile: another replica is already reconciling, skipping")
@@ -29,20 +30,19 @@ func Reconcile(ctx context.Context, sm *sandbox.SandboxManager, st *store.Store,
 		return err
 	}
 
-	for _, sb := range all {
-		if sb.Status != store.StatusRunning {
+	for _, s := range all {
+		if s.Status != store.StatusRunning {
 			continue
 		}
-
-		running, err := sm.IsRunning(ctx, sb.ContainerID)
+		running, err := sb.IsRunning(ctx, s.ID)
 		if err != nil {
-			slog.Error("reconcile: failed to check sandbox %s: %v", "sandbox_id", sb.ID, "error", err)
+			slog.Error("reconcile: failed to check sandbox", "sandbox_id", s.ID, "error", err)
+			continue
 		}
 		if !running {
-			slog.Info("reconcile: sanbox %s marked running in DB but container is gone — cleaning up", "sandbox_id", sb.ID)
-
-			if err := st.Delete(ctx, sb.ID); err != nil {
-				slog.Error("reconcile: failed to delete sandbox %s: %v", "sandbox_id", sb.ID, "error", err)
+			slog.Info("reconcile: cleaning up stale sandbox record", "sandbox_id", s.ID)
+			if err := st.Delete(ctx, s.ID); err != nil {
+				slog.Error("reconcile: failed to delete stale sandbox", "sandbox_id", s.ID, "error", err)
 			}
 		}
 	}
