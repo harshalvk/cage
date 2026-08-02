@@ -5,21 +5,21 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/harshalvk/cage/internal/backend"
 	"github.com/harshalvk/cage/internal/lock"
 	"github.com/harshalvk/cage/internal/metrics"
-	"github.com/harshalvk/cage/internal/sandbox"
 	"github.com/harshalvk/cage/internal/store"
 )
 
 type Reaper struct {
-	sm       *sandbox.SandboxManager
+	sb       backend.SandboxBackend
 	store    *store.Store
 	interval time.Duration
 	lock     *lock.DistributedLock
 }
 
-func NewReaper(sm *sandbox.SandboxManager, store *store.Store, interval time.Duration, l *lock.DistributedLock) *Reaper {
-	return &Reaper{sm: sm, store: store, interval: interval, lock: l}
+func NewReaper(sb backend.SandboxBackend, st *store.Store, interval time.Duration, l *lock.DistributedLock) *Reaper {
+	return &Reaper{sb: sb, store: st, interval: interval, lock: l}
 }
 
 func (r *Reaper) Start(ctx context.Context) {
@@ -38,7 +38,6 @@ func (r *Reaper) Start(ctx context.Context) {
 				continue
 			}
 			if !acquired {
-				// another replica is the leader this tick - nothing to do here
 				continue
 			}
 
@@ -54,7 +53,7 @@ func (r *Reaper) Start(ctx context.Context) {
 func (r *Reaper) reap(ctx context.Context) {
 	expired, err := r.store.ListExpired(ctx)
 	if err != nil {
-		slog.Error("reaper: failed to list expired sandboxes: %v", "error", err)
+		slog.Error("reaper: failed to list expired sandboxes", "error", err)
 		return
 	}
 
@@ -70,9 +69,9 @@ func (r *Reaper) reap(ctx context.Context) {
 
 func (r *Reaper) reapRunning(ctx context.Context, sb *store.Sandbox) {
 	slog.Info("reaper: killing expired running sandbox", "sandbox_id", sb.ID)
-	if err := r.sm.KillSandbox(ctx, sb.ContainerID); err != nil {
-		slog.Error("reaper: failed to kill container", "sandbox_id", sb.ID, "error", err)
-		return // don't delete the db record if the kill failed; retry next tick
+	if err := r.sb.KillSandbox(ctx, sb.ID); err != nil {
+		slog.Error("reaper: failed to kill sandbox", "sandbox_id", sb.ID, "error", err)
+		return // don't delete the DB record if the kill failed — retry next tick
 	}
 	if err := r.store.Delete(ctx, sb.ID); err != nil {
 		slog.Error("reaper: failed to delete sandbox record", "sandbox_id", sb.ID, "error", err)
@@ -81,19 +80,30 @@ func (r *Reaper) reapRunning(ctx context.Context, sb *store.Sandbox) {
 	metrics.SandboxesReaped.Inc()
 }
 
+// reapPaused garbage-collects an abandoned paused sandbox. Image cleanup
+// is an optional backend capability (backend.ImageCleaner) — on a backend
+// that doesn't support it (or doesn't support pausing at all), we still
+// remove the now-meaningless DB record rather than leaking it forever,
+// but log clearly that no underlying resource was cleaned up.
 func (r *Reaper) reapPaused(ctx context.Context, sb *store.Sandbox) {
-	slog.Info("reaper: cleaning up abandoned paused sandbox", "sanbox_id", sb.ID)
+	slog.Info("reaper: cleaning up abandoned paused sandbox", "sandbox_id", sb.ID)
 
 	if sb.PausedImageID == nil {
-		// shouldn't happen, but don't leak the db record over a data inconcsistency
-		slog.Error("reaper: paused sandbox has no image id, deleting record anyway", "sandbox_id", sb.ID)
+		slog.Warn("reaper: paused sandbox has no pause reference recorded, deleting record only", "sandbox_id", sb.ID)
 		_ = r.store.Delete(ctx, sb.ID)
 		return
 	}
 
-	if err := r.sm.RemoveImage(ctx, *sb.PausedImageID); err != nil {
-		slog.Error("reaper: failed to remove paused image", "sandbox_id", sb.ID, "image_id", *sb.PausedImageID, "error", err)
-		return // retyr next tick, same fail-safe ordering as reapRunning
+	cleaner, ok := backend.AsImageCleaner(r.sb)
+	if !ok {
+		slog.Warn("reaper: active backend does not support image cleanup, deleting record only", "sandbox_id", sb.ID)
+		_ = r.store.Delete(ctx, sb.ID)
+		return
+	}
+
+	if err := cleaner.RemoveImage(ctx, *sb.PausedImageID); err != nil {
+		slog.Error("reaper: failed to remove paused image", "sandbox_id", sb.ID, "image_ref", *sb.PausedImageID, "error", err)
+		return // retry next tick, same fail-safe ordering as reapRunning
 	}
 	if err := r.store.Delete(ctx, sb.ID); err != nil {
 		slog.Error("reaper: failed to delete sandbox record", "sandbox_id", sb.ID, "error", err)
