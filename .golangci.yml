@@ -18,4 +18,4 @@ linters:
       - _test\.go
 
 run:
-  timeout: 3m
+  timeout: 5m
