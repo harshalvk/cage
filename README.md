@@ -161,20 +161,20 @@ go build -o cage .
 ### Install the CLI
 
 **macOS/Linux (Homebrew):**
-\`\`\`bash
+```bash
 brew install harshalvk/cage/cage
-\`\`\`
+```
 
 **Windows (Scoop):**
-\`\`\`powershell
+```powershell
 scoop bucket add cage https://github.com/harshalvk/scoop-cage
 scoop install cage
-\`\`\`
+```
 
 **Any platform (install script):**
-\`\`\`bash
+```bash
 curl -sSL https://raw.githubusercontent.com/harshalvk/cage/main/install.sh | bash
-\`\`\`
+```
 
 ### Use the SDK
 
