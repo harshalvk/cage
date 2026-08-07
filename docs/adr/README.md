@@ -20,6 +20,7 @@ This folder records the significant technical decisions made while building Cage
 | [0012](0012-defer-firecracker.md)                 | Defer the Firecracker backend, continue on Docker        |
 | [0013](0013-sdk-cli-separate-modules.md)          | SDK and CLI as separate Go modules within the same repo  |
 | [0014](0014-goreleaser-cli-distribution.md)       | SDK and CLI as separate Go modules within the same repo  |
+| [0015](0015-firecracker-snapshot-pause-resume.md) | Implement Firecracker pause/resume via native VM snapshots | Accepted |
 
 ## When to write a new ADR
 
