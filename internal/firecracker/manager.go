@@ -14,11 +14,11 @@ import (
 // vmInstance tracks everything needed to manage one running microVM.
 type vmInstance struct {
 	sandboxID  string
-	cmd        *exec.Cmd
+	process    processHandle // ← was: cmd *exec.Cmd
 	apiSocket  string
 	vsockUDS   string
 	rootfsPath string
-	vsock      *vsockClient
+	vsock      fcVsock
 }
 
 // Config holds the paths and defaults FirecrackerManager needs at startup.
@@ -33,8 +33,16 @@ type Config struct {
 }
 
 type FirecrackerManager struct {
-	cfg     Config
-	rootfs  *RootfsManager
+	cfg    Config
+	rootfs *RootfsManager
+
+	// Injectable dependencies - default to real implementations in
+	// NewFirecrackerManager, overridden by tests via the unexporeted
+	// constructor NewFirecracekrManagerForTest
+	spawnProcess func(ctx context.Context, bin, apiSocket string) (processHandle, error)
+	newAPI       func(socketPath string) fcAPI
+	newVsock     func(udsPath string) fcVsock
+
 	mu      sync.Mutex
 	running map[string]*vmInstance // sandboxID -> instance
 }
@@ -53,10 +61,61 @@ func NewFirecrackerManager(cfg Config) (*FirecrackerManager, error) {
 	}
 
 	return &FirecrackerManager{
-		cfg:     cfg,
-		rootfs:  rootfs,
-		running: make(map[string]*vmInstance),
+		cfg:          cfg,
+		rootfs:       rootfs,
+		spawnProcess: realSpawnProcess,
+		newAPI:       func(socketPath string) fcAPI { return newAPIClient(socketPath) },
+		newVsock:     func(udsPath string) fcVsock { return newVsockClient(udsPath) },
+		running:      make(map[string]*vmInstance),
 	}, nil
+}
+
+// NewFirecrackerManagerForTest builds a manager with injected fakes instead
+// of real process/api/vsock implementations - used only by tests in this
+// package; prod code should always use NewFirecrackerManager
+func NewFirecrackerManagerForTest(
+	cfg Config,
+	rootfs *RootfsManager,
+	spawnProcess func(ctx context.Context, bin, apiSocket string) (processHandle, error),
+	newAPI func(socketPath string) fcAPI,
+	newVsock func(udsPath string) fcVsock,
+) *FirecrackerManager {
+	return &FirecrackerManager{
+		cfg:          cfg,
+		rootfs:       rootfs,
+		spawnProcess: spawnProcess,
+		newAPI:       newAPI,
+		newVsock:     newVsock,
+		running:      make(map[string]*vmInstance),
+	}
+}
+
+func realSpawnProcess(ctx context.Context, bin, apiSocket string) (processHandle, error) {
+	cmd := exec.CommandContext(ctx, bin, "--api-sock", apiSocket)
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	return &execProcessHandle{cmd: cmd}, nil
+}
+
+// execProcessHandle adapts *exec.Cmd to the processHandle interface
+type execProcessHandle struct {
+	cmd *exec.Cmd
+}
+
+func (h *execProcessHandle) Kill() error {
+	if h.cmd.Process == nil {
+		return nil
+	}
+	return h.cmd.Process.Kill()
+}
+
+func (h *execProcessHandle) Wait() error {
+	if h.cmd.Process == nil {
+		return nil
+	}
+	_, err := h.cmd.Process.Wait()
+	return err
 }
 
 // CreateSandbox boots a new microVM for the given template and blocks until
@@ -70,34 +129,30 @@ func (m *FirecrackerManager) CreateSandbox(ctx context.Context, sandboxID, templ
 
 	apiSocket := filepath.Join(m.cfg.RunDir, sandboxID+".api.sock")
 	vsockUDS := filepath.Join(m.cfg.RunDir, sandboxID+".vsock")
-	// firecracker refuses to start if a stale socket file already exists
+
 	removeFileIfExists(apiSocket)
 	removeFileIfExists(vsockUDS)
 
-	cmd := exec.CommandContext(ctx, m.cfg.FirecrackerBin, "--api-sock", apiSocket)
-	cmd.Stdout = nil // guest boot logs go to the VM's own console, not needed on the host here
-	cmd.Stderr = nil
-
-	if err := cmd.Start(); err != nil {
+	process, err := m.spawnProcess(ctx, m.cfg.FirecrackerBin, apiSocket) // ← was: exec.CommandContext(...) + cmd.Start()
+	if err != nil {
 		if cerr := m.rootfs.Cleanup(sandboxID); cerr != nil {
-			slog.Warn("firecracker: rootfs cleanup failed", "error", cerr)
+			slog.Warn("firecracker: rootfs cleanup failed after spawn failure", "error", cerr)
 		}
 		return fmt.Errorf("failed to start firecracker process: %w", err)
 	}
 
-	// The API socket takes a brief moment to appear after process start.
 	if err := waitForSocket(apiSocket, 3*time.Second); err != nil {
-		killProcess(cmd)
+		killProcess(process)
 		if cerr := m.rootfs.Cleanup(sandboxID); cerr != nil {
 			slog.Warn("firecracker: rootfs cleanup failed after boot failure", "error", cerr)
 		}
 		return fmt.Errorf("firecracker api socket never appeared: %w", err)
 	}
 
-	api := newAPIClient(apiSocket)
+	api := m.newAPI(apiSocket) // ← was: newAPIClient(apiSocket)
 
 	rollback := func(stage string, err error) error {
-		killProcess(cmd)
+		killProcess(process)
 		if cerr := m.rootfs.Cleanup(sandboxID); cerr != nil {
 			slog.Warn("firecracker: rootfs cleanup failed during rollback", "stage", stage, "error", cerr)
 		}
@@ -113,8 +168,6 @@ func (m *FirecrackerManager) CreateSandbox(ctx context.Context, sandboxID, templ
 	if err := api.setRootDrive(ctx, rootfsPath); err != nil {
 		return rollback("root-drive", err)
 	}
-	// CID 3 is arbitrary-but-fixed here since each VM has its own isolated
-	// vsock namespace via its own uds_path — no collision risk across VMs.
 	if err := api.setVsock(ctx, 3, vsockUDS); err != nil {
 		return rollback("vsock", err)
 	}
@@ -122,7 +175,7 @@ func (m *FirecrackerManager) CreateSandbox(ctx context.Context, sandboxID, templ
 		return rollback("start-instance", err)
 	}
 
-	vsock := newVsockClient(vsockUDS)
+	vsock := m.newVsock(vsockUDS) // ← was: newVsockClient(vsockUDS)
 	if err := vsock.waitReady(m.cfg.BootTimeout); err != nil {
 		return rollback("guest-agent-ready", fmt.Errorf("guest agent never became ready: %w", err))
 	}
@@ -130,7 +183,7 @@ func (m *FirecrackerManager) CreateSandbox(ctx context.Context, sandboxID, templ
 	m.mu.Lock()
 	m.running[sandboxID] = &vmInstance{
 		sandboxID:  sandboxID,
-		cmd:        cmd,
+		process:    process, // ← was: cmd
 		apiSocket:  apiSocket,
 		vsockUDS:   vsockUDS,
 		rootfsPath: rootfsPath,
@@ -153,11 +206,11 @@ func (m *FirecrackerManager) KillSandbox(ctx context.Context, sandboxID string) 
 		return fmt.Errorf("no running sandbox with id %s", sandboxID)
 	}
 
-	if inst.cmd.Process != nil {
-		if err := inst.cmd.Process.Kill(); err != nil {
+	if inst.process != nil {
+		if err := inst.process.Kill(); err != nil {
 			slog.Warn("firecracker: failed to kill process", "sandbox_id", sandboxID, "error", err)
 		}
-		if _, err := inst.cmd.Process.Wait(); err != nil {
+		if err := inst.process.Wait(); err != nil {
 			slog.Warn("firecracker: failed to reap process", "sandbox_id", sandboxID, "error", err)
 		}
 	}
@@ -220,11 +273,11 @@ func (m *FirecrackerManager) get(sandboxID string) (*vmInstance, error) {
 // killProcess is a best-effort process kill used during rollback paths —
 // we're already returning an error to the caller at each call site, so a
 // secondary failure here is logged but doesn't change the outcome.
-func killProcess(cmd *exec.Cmd) {
-	if cmd == nil || cmd.Process == nil {
+func killProcess(p processHandle) {
+	if p == nil {
 		return
 	}
-	if err := cmd.Process.Kill(); err != nil {
+	if err := p.Kill(); err != nil {
 		slog.Warn("firecracker: failed to kill process during cleanup", "error", err)
 	}
 }
