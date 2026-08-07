@@ -57,6 +57,30 @@ func (f *fakeAPI) startInstance(ctx context.Context) error {
 	return nil
 }
 
+func (f *fakeAPI) pauseVM(ctx context.Context) error {
+	if f.failAt == "pause-vm" {
+		return errors.New("boom")
+	}
+	return nil
+}
+
+func (f *fakeAPI) createSnapshot(ctx context.Context, snapshotPath, memFilePath string) error {
+	if f.failAt == "create-snapshot" {
+		return errors.New("boom")
+	}
+	// Simulate real files existing on disk, since RemoveImage/tests may check for them.
+	_ = os.WriteFile(snapshotPath, []byte("fake-snapshot"), 0644)
+	_ = os.WriteFile(memFilePath, []byte("fake-memory"), 0644)
+	return nil
+}
+
+func (f *fakeAPI) loadSnapshot(ctx context.Context, snapshotPath, memFilePath string) error {
+	if f.failAt == "load-snapshot" {
+		return errors.New("boom")
+	}
+	return nil
+}
+
 type fakeVsock struct {
 	readyErr error
 }
@@ -211,4 +235,114 @@ func TestIsRunning_UnknownSandboxReturnsFalseNotError(t *testing.T) {
 	running, err := mgr.IsRunning(context.Background(), "never-created")
 	require.NoError(t, err)
 	assert.False(t, running)
+}
+
+func TestPauseSandbox_Success(t *testing.T) {
+	mgr := newTestManager(t, "", nil)
+	require.NoError(t, mgr.CreateSandbox(context.Background(), "sb-1", "base"))
+
+	pauseRef, err := mgr.PauseSandbox(context.Background(), "sb-1")
+	require.NoError(t, err)
+	assert.NotEmpty(t, pauseRef)
+
+	// The sandbox should no longer be tracked as a live running instance.
+	running, _ := mgr.IsRunning(context.Background(), "sb-1")
+	assert.False(t, running)
+
+	// The manifest, snapshot, and memory files should genuinely exist on disk.
+	assert.FileExists(t, filepath.Join(pauseRef, "manifest.json"))
+	assert.FileExists(t, filepath.Join(pauseRef, "snapshot.file"))
+	assert.FileExists(t, filepath.Join(pauseRef, "memory.file"))
+
+	// The rootfs must NOT have been deleted — the snapshot still references it.
+	rootfsPath := filepath.Join(mgr.rootfs.workDir, "sb-1.ext4")
+	assert.FileExists(t, rootfsPath)
+}
+
+func TestPauseSandbox_UnknownSandbox(t *testing.T) {
+	mgr := newTestManager(t, "", nil)
+
+	_, err := mgr.PauseSandbox(context.Background(), "does-not-exist")
+	assert.Error(t, err)
+}
+
+func TestPauseSandbox_SnapshotFailureCleansUpPauseDir(t *testing.T) {
+	mgr := newTestManager(t, "create-snapshot", nil)
+	require.NoError(t, mgr.CreateSandbox(context.Background(), "sb-1", "base"))
+
+	_, err := mgr.PauseSandbox(context.Background(), "sb-1")
+	require.Error(t, err)
+
+	pauseDir := filepath.Join(mgr.cfg.RunDir, "pauses", "sb-1")
+	_, statErr := os.Stat(pauseDir)
+	assert.True(t, os.IsNotExist(statErr), "pause dir should be cleaned up after a snapshot failure")
+}
+
+func TestResumeSandbox_Success(t *testing.T) {
+	mgr := newTestManager(t, "", nil)
+	require.NoError(t, mgr.CreateSandbox(context.Background(), "sb-1", "base"))
+
+	pauseRef, err := mgr.PauseSandbox(context.Background(), "sb-1")
+	require.NoError(t, err)
+
+	err = mgr.ResumeSandbox(context.Background(), "sb-1", pauseRef)
+	require.NoError(t, err)
+
+	running, err := mgr.IsRunning(context.Background(), "sb-1")
+	require.NoError(t, err)
+	assert.True(t, running)
+
+	// Confirm it's genuinely usable again post-resume.
+	stdout, _, _, err := mgr.ExecCommand(context.Background(), "sb-1", []string{"echo", "hi"})
+	require.NoError(t, err)
+	assert.Equal(t, "fake output\n", stdout)
+}
+
+func TestResumeSandbox_MissingManifest(t *testing.T) {
+	mgr := newTestManager(t, "", nil)
+
+	err := mgr.ResumeSandbox(context.Background(), "sb-1", "/nonexistent/pause/dir")
+	assert.Error(t, err)
+}
+
+func TestResumeSandbox_MissingRootfs(t *testing.T) {
+	mgr := newTestManager(t, "", nil)
+	require.NoError(t, mgr.CreateSandbox(context.Background(), "sb-1", "base"))
+
+	pauseRef, err := mgr.PauseSandbox(context.Background(), "sb-1")
+	require.NoError(t, err)
+
+	// Simulate the rootfs having been deleted out from under the pause.
+	require.NoError(t, os.Remove(filepath.Join(mgr.rootfs.workDir, "sb-1.ext4")))
+
+	err = mgr.ResumeSandbox(context.Background(), "sb-1", pauseRef)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "rootfs referenced by snapshot is missing")
+}
+
+func TestRemoveImage_CleansUpSnapshotAndRootfs(t *testing.T) {
+	mgr := newTestManager(t, "", nil)
+	require.NoError(t, mgr.CreateSandbox(context.Background(), "sb-1", "base"))
+
+	pauseRef, err := mgr.PauseSandbox(context.Background(), "sb-1")
+	require.NoError(t, err)
+
+	rootfsPath := filepath.Join(mgr.rootfs.workDir, "sb-1.ext4")
+	assert.FileExists(t, rootfsPath) // sanity check before cleanup
+
+	err = mgr.RemoveImage(context.Background(), pauseRef)
+	require.NoError(t, err)
+
+	_, statErr := os.Stat(pauseRef)
+	assert.True(t, os.IsNotExist(statErr), "pause dir should be removed")
+
+	_, statErr = os.Stat(rootfsPath)
+	assert.True(t, os.IsNotExist(statErr), "rootfs should be removed")
+}
+
+func TestRemoveImage_NonexistentRefIsNotAnError(t *testing.T) {
+	mgr := newTestManager(t, "", nil)
+
+	err := mgr.RemoveImage(context.Background(), filepath.Join(mgr.cfg.RunDir, "pauses", "never-existed"))
+	assert.NoError(t, err, "removing an already-gone pause ref should be a no-op, not an error")
 }

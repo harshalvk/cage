@@ -90,6 +90,63 @@ func (c *apiClient) setMachineConfig(ctx context.Context, vcpuCount, memSizeMiB 
 	})
 }
 
+func (c *apiClient) patch(ctx context.Context, path string, body any) error {
+	b, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, "http://unix"+path, bytes.NewReader(b))
+	if err != nil {
+		return fmt.Errorf("failed to build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("firecracker api request failed: %w", err)
+	}
+	defer func() {
+		if cerr := resp.Body.Close(); cerr != nil {
+			_ = cerr
+		}
+	}()
+
+	if resp.StatusCode >= 300 {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("firecracker api error on %s (status %d): %s", path, resp.StatusCode, respBody)
+	}
+	return nil
+}
+
+// pauseVM transitions a running VM to the Paused state - required before
+// a snapshot can be taken
+func (c *apiClient) pauseVM(ctx context.Context) error {
+	return c.patch(ctx, "/vm", map[string]string{"state": "Paused"})
+}
+
+// createSnapshot captures the paused VM's full state (device/cpu state to
+// snapshotPath, memory contents to memFilePath). the vm must already be
+// paused via pauseVM
+func (c *apiClient) createSnapshot(ctx context.Context, snapshotPath, memFilePath string) error {
+	return c.put(ctx, "/snapshot/create", map[string]string{
+		"snapshot_type": "Full",
+		"snapshot_path": snapshotPath,
+		"mem_file_path": memFilePath,
+	})
+}
+
+// loadSnapshot restores a VM from a previously created snapshot into a
+// freshly spawned (but not yet booted) Firecracker process, resuming
+// execution immediately
+func (c *apiClient) loadSnapshot(ctx context.Context, snapshotPath, memFilePath string) error {
+	return c.put(ctx, "/snapshot/load", map[string]any{
+		"snapshot_path": snapshotPath,
+		"mem_file_path": memFilePath,
+		"resume_vm":     true,
+	})
+}
+
 func (c *apiClient) startInstance(ctx context.Context) error {
 	return c.put(ctx, "/actions", map[string]string{"action_type": "InstanceStart"})
 }

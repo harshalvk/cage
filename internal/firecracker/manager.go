@@ -2,6 +2,7 @@ package firecracker
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -10,6 +11,17 @@ import (
 	"sync"
 	"time"
 )
+
+// pauseManifest is persisted as json alongside a snapshot's files, so
+// ResumeSandbox knows exactly what to load without needing any other
+// state. rootfsPath is the ORIGINAL per-sandbox rootfs file's path - it
+// must remain at that exact path for the snapshot's restored drive
+// attachment to resolve correctly, so pausing must never move or rename it
+type pauseManifest struct {
+	RootfsPath   string `json:"rootfs_path"`
+	SnapshotPath string `json:"snapshot_path"`
+	MemFilePath  string `json:"mem_file_path"`
+}
 
 // vmInstance tracks everything needed to manage one running microVM.
 type vmInstance struct {
@@ -270,6 +282,177 @@ func (m *FirecrackerManager) get(sandboxID string) (*vmInstance, error) {
 	return inst, nil
 }
 
+func waitForSocket(path string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return nil
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return fmt.Errorf("timed out waiting for %s", path)
+}
+
+// backend.Pausable
+
+// PauseSandbox suspends a running vm via firecracker's native snapshot
+// support: pause execution, write memory + device state to disk, then kill
+// the process entirely to free its ram. unlike docker's commit+recreate
+// approach (adr 0005), this caputres live memroy state, not just the
+// filesystem - a resumed sandbox continues exacelty where it left offf
+
+// the per-sandbox rootfs file is deliberately NOT touched here: the
+// snapshot's restored drive attachment references it by its exact original
+// path, so it must remain in place, untouched, for the lifetime of the pause
+func (m *FirecrackerManager) PauseSandbox(ctx context.Context, sandboxID string) (string, error) {
+	inst, err := m.get(sandboxID)
+	if err != nil {
+		return "", err
+	}
+
+	pauseDir := filepath.Join(m.cfg.RunDir, "pauses", sandboxID)
+	if err := os.MkdirAll(pauseDir, 0755); err != nil {
+		return "", fmt.Errorf("failed to create pause dir: %w", err)
+	}
+
+	snapshotPath := filepath.Join(pauseDir, "snapshot.file")
+	memeFilePath := filepath.Join(pauseDir, "memory.file")
+
+	api := m.newAPI(inst.apiSocket)
+
+	if err := api.pauseVM(ctx); err != nil {
+		if rerr := os.RemoveAll(pauseDir); err != nil {
+			slog.Warn("firecracker: failed to clean up pause dir after error", "error", rerr)
+		}
+		return "", fmt.Errorf("failed to pause vm: %w", err)
+	}
+	if err := api.createSnapshot(ctx, snapshotPath, memeFilePath); err != nil {
+		if rerr := os.RemoveAll(pauseDir); rerr != nil {
+			slog.Warn("firecracker: failed to cleanup pause dir after error", "error", rerr)
+		}
+	}
+
+	manifest := pauseManifest{
+		RootfsPath:   inst.rootfsPath,
+		SnapshotPath: snapshotPath,
+		MemFilePath:  memeFilePath,
+	}
+	manifestBytes, err := json.Marshal(manifest)
+	if err != nil {
+		if rerr := os.RemoveAll(pauseDir); rerr != nil {
+			slog.Warn("firecracker: failed to cleanup pause dir after error", "error", rerr)
+		}
+		return "", fmt.Errorf("failed to marshal pause manifest: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(pauseDir, "manifest.json"), manifestBytes, 0644); err != nil {
+		if rerr := os.RemoveAll(pauseDir); rerr != nil {
+			slog.Warn("firecracker: failed to cleanup pause dir after error", "error", rerr)
+		}
+		return "", fmt.Errorf("failed to write pause manifest: %w", err)
+	}
+
+	// snapshot is safely on disk - now free the process's memory
+	if err := inst.process.Kill(); err != nil {
+		slog.Warn("firecracker: failed to kill process after snapshot", "sandbox_id", sandboxID, "error", err)
+	}
+	if err := inst.process.Wait(); err != nil {
+		slog.Warn("firecracker: failed to reap process after snapshot", "sandbox_id", sandboxID, "error", err)
+	}
+	removeFileIfExists(inst.apiSocket)
+	removeFileIfExists(inst.vsockUDS)
+
+	m.mu.Lock()
+	delete(m.running, sandboxID)
+	m.mu.Unlock()
+
+	return pauseDir, nil
+}
+
+// ResumeSandbox spawns a fresh Firecracker process and loads a previously
+// created snapshot into it, resuming execution from exactly where
+// PauseSandbox left off - including in-memory state, not just files
+func (m *FirecrackerManager) ResumeSandbox(ctx context.Context, sandboxID, pauseRef string) error {
+	manifestBytes, err := os.ReadFile(filepath.Join(pauseRef, "manifest.json"))
+	if err != nil {
+		return fmt.Errorf("failed to road pause manifest: %w", err)
+	}
+	var manifest pauseManifest
+	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
+		return fmt.Errorf("failed to parse pause manifest: %w", err)
+	}
+
+	if _, err := os.Stat(manifest.RootfsPath); err != nil {
+		return fmt.Errorf("rootfs referenced by snapshot is missing: %w", err)
+	}
+
+	apiSocket := filepath.Join(m.cfg.RunDir, sandboxID+".api.sock")
+	vsockUDS := filepath.Join(m.cfg.RunDir, sandboxID+".vsock")
+	removeFileIfExists(apiSocket)
+	removeFileIfExists(vsockUDS)
+
+	process, err := m.spawnProcess(ctx, m.cfg.FirecrackerBin, apiSocket)
+	if err != nil {
+		return fmt.Errorf("failed to start firecracker process for resume: %w", err)
+	}
+
+	if err := waitForSocket(apiSocket, 3*time.Second); err != nil {
+		killProcess(process)
+		return fmt.Errorf("firecracker api socket never appeared during resume: %w", err)
+	}
+
+	api := m.newAPI(apiSocket)
+
+	// the host-side vsock UDS must be (re-)configured before loading the
+	// snapshot - it's host-only construct, not part of the vm's own
+	// saved state, so a fresh process always needs it set explicitly
+	if err := api.setVsock(ctx, 3, vsockUDS); err != nil {
+		killProcess(process)
+		return fmt.Errorf("failed to load snapshot: %w", err)
+	}
+
+	vsock := m.newVsock(vsockUDS)
+	// the guest was already booted and running before it was paused, so
+	// this should resolve quickly - a much shorter wait than a cold boot
+	if err := vsock.waitReady(5 * time.Second); err != nil {
+		killProcess(process)
+		return fmt.Errorf("guest agent did not respond after resume: %w", err)
+	}
+
+	m.mu.Lock()
+	m.running[sandboxID] = &vmInstance{
+		sandboxID:  sandboxID,
+		process:    process,
+		apiSocket:  apiSocket,
+		vsockUDS:   vsockUDS,
+		rootfsPath: manifest.RootfsPath,
+		vsock:      vsock,
+	}
+	m.mu.Unlock()
+
+	return nil
+}
+
+// backend.ImageCleaner
+
+// RemoveImage deletes a pause's snapshot files and the rootfs file it
+// referenced. Safe to call even if ref doesn't exit
+func (m *FirecrackerManager) RemoveImage(ctx context.Context, ref string) error {
+	manifestBytes, err := os.ReadFile(filepath.Join(ref, "manifest.json"))
+	if err == nil {
+		var manifest pauseManifest
+		if jerr := json.Unmarshal(manifestBytes, &manifest); jerr == nil {
+			removeFileIfExists(manifest.RootfsPath)
+		}
+	} else if !os.IsNotExist(err) {
+		slog.Warn("firecracker: failed to read pause manifest during cleanup", "ref", ref, "error", err)
+	}
+
+	if err := os.RemoveAll(ref); err != nil {
+		return fmt.Errorf("failed to remove pause directory: %w", err)
+	}
+	return nil
+}
+
 // killProcess is a best-effort process kill used during rollback paths —
 // we're already returning an error to the caller at each call site, so a
 // secondary failure here is logged but doesn't change the outcome.
@@ -289,15 +472,4 @@ func removeFileIfExists(path string) {
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		slog.Warn("firecracker: failed to remove file during cleanup", "path", path, "error", err)
 	}
-}
-
-func waitForSocket(path string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if _, err := os.Stat(path); err == nil {
-			return nil
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	return fmt.Errorf("timed out waiting for %s", path)
 }
