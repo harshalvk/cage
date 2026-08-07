@@ -23,3 +23,11 @@ Defer the Firecracker backend. Continue building out remaining production-readin
 - All work in this phase (Redis caching, rate limiting, warm pooling, structured logging/metrics, graceful shutdown) is backend-agnostic at the seams that matter — `SandboxManager` already sits behind a `DockerClient` interface (ADR 0001), so none of this phase's work needs to be redone when Firecracker is eventually implemented.
 - The security/isolation limitation noted in ADR 0001 (shared-kernel, namespace-level isolation rather than VM-level) remains in effect for as long as this decision stands — Cage should not be used to run genuinely untrusted third-party code in its current form.
 - When resumed, the Firecracker work should be treated as its own multi-step project (environment setup and manual VM boot, guest agent, Go wrapper, networking, backend selection, snapshot-based pause/resume) rather than a single step, given the scope uncovered here.
+
+## Status
+
+Superseded — Firecracker backend is now implemented (see ADR 0001's `DockerClient` interface seam, and ADR 0015) on the `firecracker` branch. This ADR's *reasoning* for why Docker was the sensible starting point remains valid history; it no longer reflects current status.
+
+## Update — 2026-07-24
+
+Work resumed once a working WSL2 + KVM environment was confirmed available (see ADR 0001 for the original environment blockers). `internal/firecracker` now implements the full `backend.SandboxBackend` interface plus `Pausable` and `ImageCleaner` (ADR 0015). Networking (A4.5) remains deprioritized — vsock alone covers exec/file transfer without it. Not yet merged to `master`; still pending a real (non-faked) end-to-end validation pass and CI strategy for environments without KVM.
