@@ -111,14 +111,14 @@ func run() error {
 		poolConfigs := make([]pool.TemplateConfig, 0, len(templates))
 		for _, t := range templates {
 			poolConfigs = append(poolConfigs, pool.TemplateConfig{
-				Slug:  t.Slug,
-				Image: t.Image,
-				Size:  cfg.WarmPoolSize,
+				Slug:        t.Slug,
+				TemplateRef: t.Image, // docker image string or firecracker-rootfs slug, depending on active backend
+				Size:        cfg.WarmPoolSize,
 			})
 		}
-		warmPool = pool.New(sm, poolConfigs)
+		warmPool = pool.New(sandboxBackend, poolConfigs)
 		warmPool.Start(ctx)
-		logger.Info("warm pool ready")
+		logger.Info("warm pool ready", "isolation_backend", cfg.IsolationBackend)
 	}
 
 	reaperLock := lock.New(c.RawClient(), "reaper", 30*time.Second)
