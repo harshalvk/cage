@@ -110,9 +110,13 @@ func run() error {
 
 		poolConfigs := make([]pool.TemplateConfig, 0, len(templates))
 		for _, t := range templates {
+			ref, err := t.ResolveRef(cfg.IsolationBackend)
+			if err != nil {
+				logger.Warn("skipping template with no ref for active backend", "template", t.Slug, "error", err)
+			}
 			poolConfigs = append(poolConfigs, pool.TemplateConfig{
 				Slug:        t.Slug,
-				TemplateRef: t.Image, // docker image string or firecracker-rootfs slug, depending on active backend
+				TemplateRef: ref, // docker image string or firecracker-rootfs slug, depending on active backend
 				Size:        cfg.WarmPoolSize,
 			})
 		}
@@ -133,7 +137,7 @@ func run() error {
 
 	limiter := ratelimit.NewLimiter(c.RawClient(), 20, 5)
 
-	a := api.NewAPI(sandboxBackend, st, cfg.SandboxTTL, cfg.PausedTTL, warmPool)
+	a := api.NewAPI(sandboxBackend, st, cfg.SandboxTTL, cfg.PausedTTL, warmPool, cfg.IsolationBackend)
 
 	r := chi.NewRouter()
 	r.Use(middleware.Recoverer)
