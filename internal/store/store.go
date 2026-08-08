@@ -28,10 +28,11 @@ type Sandbox struct {
 }
 
 type Template struct {
-	ID          string `json:"id"`
-	Slug        string `json:"slug"`
-	Image       string `json:"image"`
-	Description string `json:"description"`
+	ID                    string `json:"id"`
+	Slug                  string `json:"slug"`
+	Image                 string `json:"image"`                   // docker-specific
+	FirecrackerRootfsSlug string `json:"firecracker_rootfs_slug"` // firecracker-specific, nullable
+	Description           string `json:"description"`
 }
 
 type Store struct {
@@ -140,9 +141,9 @@ func (s *Store) ValidateAPIKey(ctx context.Context, keyHash string) (bool, error
 func (s *Store) GetTemplateBySlug(ctx context.Context, slug string) (*Template, error) {
 	var t Template
 	err := s.pool.QueryRow(ctx,
-		`SELECT id, slug, image, description FROM templates WHERE slug = $1`,
+		`SELECT id, slug, image, firecracker_rootfs_slug, description FROM templates WHERE slug = $1`,
 		slug,
-	).Scan(&t.ID, &t.Slug, &t.Image, &t.Description)
+	).Scan(&t.ID, &t.Slug, &t.Image, &t.FirecrackerRootfsSlug, &t.Description)
 
 	if err == pgx.ErrNoRows {
 		return nil, nil
@@ -154,7 +155,7 @@ func (s *Store) GetTemplateBySlug(ctx context.Context, slug string) (*Template, 
 }
 
 func (s *Store) ListTemplate(ctx context.Context) ([]*Template, error) {
-	rows, err := s.pool.Query(ctx, `SELECT id, slug, image, description FROM templates ORDER BY slug`)
+	rows, err := s.pool.Query(ctx, `SELECT id, slug, image, firecracker_rootfs_slug, description FROM templates ORDER BY slug`)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list templates: %w", err)
 	}
@@ -163,7 +164,7 @@ func (s *Store) ListTemplate(ctx context.Context) ([]*Template, error) {
 	templates := []*Template{}
 	for rows.Next() {
 		var t Template
-		if err := rows.Scan(&t.ID, &t.Slug, &t.Image, &t.Description); err != nil {
+		if err := rows.Scan(&t.ID, &t.Slug, &t.Image, &t.FirecrackerRootfsSlug, &t.Description); err != nil {
 			return nil, fmt.Errorf("failed to scan template: %w", err)
 		}
 		templates = append(templates, &t)
