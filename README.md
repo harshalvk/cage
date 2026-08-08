@@ -39,6 +39,7 @@ curl -X POST http://localhost:8080/sandboxes
 - [x] Custom sandbox templates (Python, Node, or your own image)
 - [x] Persistent storage (Postgres) for sandbox + API key metadata
 - [x] Idle/expiry-based cleanup (background reaper + startup reconciliation)
+ - [x] Pluggable isolation backends — Docker (default) or Firecracker microVMs, see [docs/firecracker-setup.md](docs/firecracker-setup.md)
   
 **Production readiness**
 - [x] API key authentication (hashed, never stored raw)
@@ -199,6 +200,18 @@ make genkey name=local-dev
 curl -X POST http://localhost:8080/sandboxes \
   -H "Authorization: Bearer <your-api-key>"
 ```
+
+## Isolation Backends
+
+Cage supports two backends for actually running sandboxes, selected via `ISOLATION_BACKEND`:
+
+| Backend | Isolation | Status |
+|---------|-----------|--------|
+| `docker` (default) | Container (shared kernel) | Stable |
+| `firecracker` | microVM (KVM-based) | Available, not yet merged to `master` — see [docs/firecracker-setup.md](docs/firecracker-setup.md) |
+
+Both backends support the full sandbox lifecycle, exec, and file transfer identically. Pause/resume works on both, via different mechanisms — see [ADR 0005](docs/adr/0005-pause-resume-via-commit-recreate.md) and [ADR 0015](docs/adr/0015-firecracker-snapshot-pause-resume.md).
+
 
 ### API Reference
 
