@@ -28,11 +28,11 @@ type Sandbox struct {
 }
 
 type Template struct {
-	ID                    string `json:"id"`
-	Slug                  string `json:"slug"`
-	Image                 string `json:"image"`                   // docker-specific
-	FirecrackerRootfsSlug string `json:"firecracker_rootfs_slug"` // firecracker-specific, nullable
-	Description           string `json:"description"`
+	ID                    string  `json:"id"`
+	Slug                  string  `json:"slug"`
+	Image                 string  `json:"image"`                   // docker-specific
+	FirecrackerRootfsSlug *string `json:"firecracker_rootfs_slug"` // firecracker-specific, nullable
+	Description           string  `json:"description"`
 }
 
 type Store struct {
@@ -170,4 +170,25 @@ func (s *Store) ListTemplate(ctx context.Context) ([]*Template, error) {
 		templates = append(templates, &t)
 	}
 	return templates, nil
+}
+
+// ResolveRef returns the correct backend-specific reference for this
+// template, given the active isolation backend. Returns an error if the
+// template has no reference configured for that backend — this is
+// deliberately a hard failure, not a silent fallback, since booting a
+// Docker image string as a Firecracker rootfs path (or vice versa) fails
+// in confusing, hard-to-debug ways rather than a clear error.
+func (t *Template) ResolveRef(isolationBackend string) (string, error) {
+	switch isolationBackend {
+	case "firecracker":
+		if t.FirecrackerRootfsSlug == nil || *t.FirecrackerRootfsSlug == "" {
+			return "", fmt.Errorf("template %q has no firecracker_rootfs_slug configured", t.Slug)
+		}
+		return *t.FirecrackerRootfsSlug, nil
+	default:
+		if t.Image == "" {
+			return "", fmt.Errorf("template %q has no docker image configured", t.Slug)
+		}
+		return t.Image, nil
+	}
 }
