@@ -31,3 +31,16 @@ Superseded — Firecracker backend is now implemented (see ADR 0001's `DockerCli
 ## Update — 2026-07-24
 
 Work resumed once a working WSL2 + KVM environment was confirmed available (see ADR 0001 for the original environment blockers). `internal/firecracker` now implements the full `backend.SandboxBackend` interface plus `Pausable` and `ImageCleaner` (ADR 0015). Networking (A4.5) remains deprioritized — vsock alone covers exec/file transfer without it. Not yet merged to `master`; still pending a real (non-faked) end-to-end validation pass and CI strategy for environments without KVM.
+
+## Update — 2026-08-08
+
+Firecracker implementation is functionally complete: full SandboxBackend,
+Pausable, and ImageCleaner support, validated against real KVM on WSL2
+(not just mocked tests) as of this update — see the fctest scratch program
+run confirming a real pause/resume/exec cycle. Warm pool support (ADR 0009)
+now works identically on both backends. Template schema updated (ADR — see
+the firecracker_rootfs_slug migration) to avoid the Docker-image/rootfs-slug
+ambiguity. Setup is documented in docs/firecracker-setup.md. Remaining open
+items: no networking (deliberately deprioritized, vsock covers exec/files),
+no CI coverage for real KVM behavior (mocked tests only), not yet merged
+from the `firecracker` branch to `master`.
