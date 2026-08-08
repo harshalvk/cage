@@ -17,15 +17,16 @@ import (
 )
 
 type API struct {
-	sb         backend.SandboxBackend
-	store      *store.Store
-	sandboxTTL time.Duration
-	pausedTTL  time.Duration
-	pool       *pool.Pool // nil when the active backend has no warm-pool support
+	sb               backend.SandboxBackend
+	store            *store.Store
+	sandboxTTL       time.Duration
+	pausedTTL        time.Duration
+	pool             *pool.Pool // nil when the active backend has no warm-pool support
+	isolationBackend string     // "docker" or "firecracker" — needed to resolve template refs correctly
 }
 
-func NewAPI(sb backend.SandboxBackend, st *store.Store, sandboxTTL, pausedTTL time.Duration, p *pool.Pool) *API {
-	return &API{sb: sb, store: st, sandboxTTL: sandboxTTL, pausedTTL: pausedTTL, pool: p}
+func NewAPI(sb backend.SandboxBackend, st *store.Store, sandboxTTL, pausedTTL time.Duration, p *pool.Pool, isolationBackend string) *API {
+	return &API{sb: sb, store: st, sandboxTTL: sandboxTTL, pausedTTL: pausedTTL, pool: p, isolationBackend: isolationBackend}
 }
 
 // parseUUID validates that id is a well-formed UUID before it's used in a
@@ -74,6 +75,12 @@ func (a *API) CreateSandbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	templateRef, err := tmpl.ResolveRef(a.isolationBackend)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
 	sandboxID := uuid.NewString()
 	fromPool := false
 
@@ -94,7 +101,7 @@ func (a *API) CreateSandbox(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !fromPool {
-		if err := a.sb.CreateSandbox(ctx, sandboxID, tmpl.Image); err != nil {
+		if err := a.sb.CreateSandbox(ctx, sandboxID, templateRef); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
