@@ -1,0 +1,11 @@
+[Unit]
+Description=Cage guest agent
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/guest-agent
+Restart=always
+User=root
+
+[Install]
+WantedBy=multi-user.target

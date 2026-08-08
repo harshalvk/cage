@@ -16,9 +16,11 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/harshalvk/cage/internal/api"
+	"github.com/harshalvk/cage/internal/backend"
 	"github.com/harshalvk/cage/internal/cache"
 	"github.com/harshalvk/cage/internal/config"
 	"github.com/harshalvk/cage/internal/db"
+	"github.com/harshalvk/cage/internal/firecracker"
 	"github.com/harshalvk/cage/internal/lock"
 	"github.com/harshalvk/cage/internal/logging"
 	"github.com/harshalvk/cage/internal/pool"
@@ -44,23 +46,18 @@ func run() error {
 
 	cfg, err := config.LoadConfig()
 	if err != nil {
-		return err // slog not initialized yet, main() logs this with slog anyway since it's still structured
+		return err
 	}
 
 	logger := logging.New(cfg.LogLevel)
 	slog.SetDefault(logger)
-	logger.Info("starting cage", "port", cfg.Port, "warm_pool_size", cfg.WarmPoolSize)
+	logger.Info("starting cage", "port", cfg.Port, "warm_pool_size", cfg.WarmPoolSize, "isolation_backend", cfg.IsolationBackend)
 
 	if err := db.RunMigrations(cfg.DatabaseURL); err != nil {
 		return err
 	}
 
 	st, err := store.NewStore(ctx, cfg.DatabaseURL)
-	if err != nil {
-		return err
-	}
-
-	sm, err := sandbox.NewSandboxManager()
 	if err != nil {
 		return err
 	}
@@ -75,36 +72,72 @@ func run() error {
 		}
 	}()
 
+	// sandboxBackend is the single interface every downstream consumer
+	// (reaper, reconcile, API handlers) depends on. warmPool stays nil
+	// when running on Firecracker — the warm pool concept is Docker-image
+	// specific (see internal/pool) and has no Firecracker equivalent yet.
+	var sandboxBackend backend.SandboxBackend
+	var warmPool *pool.Pool
+
+	switch cfg.IsolationBackend {
+	case "firecracker":
+		fcMgr, err := firecracker.NewFirecrackerManager(firecracker.Config{
+			FirecrackerBin: cfg.FirecrackerBin,
+			KernelPath:     cfg.FirecrackerKernel,
+			RootfsBaseDir:  cfg.FirecrackerRootfsDir,
+			RunDir:         cfg.FirecrackerRunDir,
+			VCPUCount:      1,
+			MemSizeMiB:     128,
+		})
+		if err != nil {
+			return err
+		}
+		sandboxBackend = fcMgr
+		logger.Info("using firecracker isolation backend (warm pool and pause/resume are not yet supported on this backend)")
+
+	default:
+		sm, err := sandbox.NewSandboxManager()
+		if err != nil {
+			return err
+		}
+		sandboxBackend = sandbox.NewBackendAdapter(sm)
+		logger.Info("using docker isolation backend")
+
+		templates, err := st.ListTemplate(ctx)
+		if err != nil {
+			return err
+		}
+
+		poolConfigs := make([]pool.TemplateConfig, 0, len(templates))
+		for _, t := range templates {
+			ref, err := t.ResolveRef(cfg.IsolationBackend)
+			if err != nil {
+				logger.Warn("skipping template with no ref for active backend", "template", t.Slug, "error", err)
+			}
+			poolConfigs = append(poolConfigs, pool.TemplateConfig{
+				Slug:        t.Slug,
+				TemplateRef: ref, // docker image string or firecracker-rootfs slug, depending on active backend
+				Size:        cfg.WarmPoolSize,
+			})
+		}
+		warmPool = pool.New(sandboxBackend, poolConfigs)
+		warmPool.Start(ctx)
+		logger.Info("warm pool ready", "isolation_backend", cfg.IsolationBackend)
+	}
+
 	reaperLock := lock.New(c.RawClient(), "reaper", 30*time.Second)
 	reconcileLock := lock.New(c.RawClient(), "reconcile", 60*time.Second)
 
-	if err := reconcile.Reconcile(ctx, sm, st, reconcileLock); err != nil {
+	if err := reconcile.Reconcile(ctx, sandboxBackend, st, reconcileLock); err != nil {
 		slog.Error("reconcile failed", "error", err)
 	}
 
-	rp := reaper.NewReaper(sm, st, cfg.ReaperInterval, reaperLock)
+	rp := reaper.NewReaper(sandboxBackend, st, cfg.ReaperInterval, reaperLock)
 	go rp.Start(ctx)
-
-	templates, err := st.ListTemplate(ctx)
-	if err != nil {
-		return err
-	}
-
-	poolConfigs := make([]pool.TemplateConfig, 0, len(templates))
-	for _, t := range templates {
-		poolConfigs = append(poolConfigs, pool.TemplateConfig{
-			Slug:  t.Slug,
-			Image: t.Image,
-			Size:  cfg.WarmPoolSize,
-		})
-	}
-	warmPool := pool.New(sm, poolConfigs)
-	warmPool.Start(ctx)
-	logger.Info("warm pool ready")
 
 	limiter := ratelimit.NewLimiter(c.RawClient(), 20, 5)
 
-	a := api.NewAPI(sm, st, cfg.SandboxTTL, cfg.PausedTTL, warmPool)
+	a := api.NewAPI(sandboxBackend, st, cfg.SandboxTTL, cfg.PausedTTL, warmPool, cfg.IsolationBackend)
 
 	r := chi.NewRouter()
 	r.Use(middleware.Recoverer)

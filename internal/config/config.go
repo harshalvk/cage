@@ -5,21 +5,27 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/joho/godotenv"
 )
 
 type Config struct {
-	Port           string
-	DatabaseURL    string
-	RedisURL       string
-	ReaperInterval time.Duration
-	SandboxTTL     time.Duration
-	PausedTTL      time.Duration
-	WarmPoolSize   int
-	LogLevel       string
-	MetricsToken   string
+	Port                 string
+	DatabaseURL          string
+	RedisURL             string
+	ReaperInterval       time.Duration
+	SandboxTTL           time.Duration
+	PausedTTL            time.Duration
+	WarmPoolSize         int
+	LogLevel             string
+	MetricsToken         string
+	IsolationBackend     string // docker or firecracker
+	FirecrackerBin       string
+	FirecrackerKernel    string
+	FirecrackerRootfsDir string
+	FirecrackerRunDir    string
 }
 
 func LoadConfig() (*Config, error) {
@@ -34,18 +40,28 @@ func LoadConfig() (*Config, error) {
 	}
 	cfg.LogLevel = getEnv("LOG_LEVEL", "info")
 	cfg.MetricsToken = getEnv("METRICS_TOKEN", "")
+	cfg.IsolationBackend = getEnv("ISOLATION_BACKEND", "docker")
+	cfg.FirecrackerBin = getEnv("FIRECRACKER_BIN", "/usr/local/bin/firecracker")
+	cfg.FirecrackerKernel = getEnv("FIRECRACKER_KERNEL", "/var/lib/cage/vmlinux.bin")
+	cfg.FirecrackerRootfsDir = getEnv("FIRECRACKER_ROOTFS_DIR", "/var/lib/cage/rootfs-base")
+	cfg.FirecrackerRunDir = getEnv("FIRECRACKER_RUN_DIR", "/var/lib/cage/fc-run")
+
+	cfg.IsolationBackend = getEnv("ISOLATION_BACKEND", "docker")
+	if cfg.IsolationBackend != "docker" && cfg.IsolationBackend != "firecracker" {
+		return nil, fmt.Errorf("ISOLATION_BACKEND must be 'docker' or 'firecracker',  got %q", cfg.IsolationBackend)
+	}
 
 	if cfg.DatabaseURL == "" {
 		return nil, fmt.Errorf("DATABASE_URL is required")
 	}
 
-	reaperInterval, err := time.ParseDuration(getEnv("REAPER_INTERVAL", "30s"))
+	reaperInterval, err := time.ParseDuration(strings.TrimSpace(getEnv("REAPER_INTERVAL", "30s")))
 	if err != nil {
 		return nil, fmt.Errorf("invalid REAPER_INTERVAL: %w", err)
 	}
 	cfg.ReaperInterval = reaperInterval
 
-	sandboxTTL, err := time.ParseDuration(getEnv("SANDBOX_TTL", "1h"))
+	sandboxTTL, err := time.ParseDuration(strings.TrimSpace(getEnv("SANDBOX_TTL", "1h")))
 	if err != nil {
 		return nil, fmt.Errorf("invalid SANDBOX_TTL: %w", err)
 	}
@@ -57,7 +73,7 @@ func LoadConfig() (*Config, error) {
 	}
 	cfg.WarmPoolSize = warmPoolSize
 
-	pausedTTL, err := time.ParseDuration(getEnv("PAUSED_SANDBOX_TTL", "24h"))
+	pausedTTL, err := time.ParseDuration(strings.TrimSpace(getEnv("PAUSED_SANDBOX_TTL", "24h")))
 	if err != nil {
 		return nil, fmt.Errorf("invalid PAUSED_SANDBOX_TTL: %w", err)
 	}

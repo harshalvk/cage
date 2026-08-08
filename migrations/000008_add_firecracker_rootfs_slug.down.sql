@@ -1,0 +1,1 @@
+ALTER TABLE templates DROP COLUMN firecracker_rootfs_slug;

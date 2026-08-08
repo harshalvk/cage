@@ -10,17 +10,39 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+
+	"github.com/harshalvk/cage/internal/backend"
 	"github.com/harshalvk/cage/internal/pool"
-	"github.com/harshalvk/cage/internal/sandbox"
 	"github.com/harshalvk/cage/internal/store"
 )
 
 type API struct {
-	sm         *sandbox.SandboxManager
-	store      *store.Store
-	sandboxTTL time.Duration
-	pausedTTL  time.Duration
-	pool       *pool.Pool
+	sb               backend.SandboxBackend
+	store            *store.Store
+	sandboxTTL       time.Duration
+	pausedTTL        time.Duration
+	pool             *pool.Pool // nil when the active backend has no warm-pool support
+	isolationBackend string     // "docker" or "firecracker" — needed to resolve template refs correctly
+}
+
+func NewAPI(sb backend.SandboxBackend, st *store.Store, sandboxTTL, pausedTTL time.Duration, p *pool.Pool, isolationBackend string) *API {
+	return &API{sb: sb, store: st, sandboxTTL: sandboxTTL, pausedTTL: pausedTTL, pool: p, isolationBackend: isolationBackend}
+}
+
+// parseUUID validates that id is a well-formed UUID before it's used in a
+// database query. A malformed ID is treated as "not found" (404) rather
+// than surfacing a raw database error as a 500 — see the ADR on ID
+// validation for why this distinction matters.
+func parseUUID(w http.ResponseWriter, id string) (string, bool) {
+	if _, err := uuid.Parse(id); err != nil {
+		http.Error(w, "sandbox not found", http.StatusNotFound)
+		return "", false
+	}
+	return id, true
+}
+
+type CreateSandboxRequest struct {
+	Template string `json:"template"`
 }
 
 type ExecRequest struct {
@@ -29,21 +51,16 @@ type ExecRequest struct {
 
 type WriteFileRequest struct {
 	Path    string `json:"path"`
-	Content string `json:"content"` // for now plain text; base64 later for binary
-}
-type CreateSandboxRequest struct {
-	Template string `json:"template"`
+	Content string `json:"content"`
 }
 
-func NewAPI(sm *sandbox.SandboxManager, store *store.Store, sandboxTTL time.Duration, pausedTTL time.Duration, p *pool.Pool) *API {
-	return &API{sm: sm, store: store, sandboxTTL: sandboxTTL, pausedTTL: pausedTTL, pool: p}
-}
+// --- Sandbox lifecycle ---
 
 func (a *API) CreateSandbox(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	var req CreateSandboxRequest
-	_ = json.NewDecoder(r.Body).Decode(&req)
+	_ = json.NewDecoder(r.Body).Decode(&req) // body is optional; defaults below cover a missing/empty one
 	if req.Template == "" {
 		req.Template = "base"
 	}
@@ -54,52 +71,68 @@ func (a *API) CreateSandbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if tmpl == nil {
-		http.Error(w, fmt.Sprintf("unknown templates: %s", req.Template), http.StatusBadRequest)
+		http.Error(w, fmt.Sprintf("unknown template: %s", req.Template), http.StatusBadRequest)
 		return
 	}
 
-	var containerID string
-	var fromPool bool
+	templateRef, err := tmpl.ResolveRef(a.isolationBackend)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 
-	if containerID, fromPool = a.pool.Take(ctx, tmpl.Slug); !fromPool {
-		// cold path - pool was empty, pay the full create cost
-		containerID, err = a.sm.CreateSandbox(ctx, tmpl.Image)
-		if err != nil {
+	sandboxID := uuid.NewString()
+	fromPool := false
+
+	// Try the warm pool first, but only if both (a) this API instance has
+	// one configured, and (b) the active backend actually supports adopting
+	// a pre-warmed resource. Neither is guaranteed — e.g. a Firecracker
+	// backend currently has no pool at all (a.pool == nil).
+	if a.pool != nil {
+		if adopter, ok := backend.AsWarmAdopter(a.sb); ok {
+			if nativeID, ok := a.pool.Take(ctx, tmpl.Slug); ok {
+				if err := adopter.AdoptWarmResource(ctx, sandboxID, nativeID); err != nil {
+					slog.Warn("failed to adopt warm resource, falling back to cold create", "error", err)
+				} else {
+					fromPool = true
+				}
+			}
+		}
+	}
+
+	if !fromPool {
+		if err := a.sb.CreateSandbox(ctx, sandboxID, templateRef); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 	}
 
 	sb := &store.Sandbox{
-		ID:           uuid.NewString(),
-		ContainerID:  containerID,
+		ID:           sandboxID,
+		ContainerID:  sandboxID, // sandbox ID is now the single identity handed to the backend
 		Status:       store.StatusRunning,
 		CreatedAt:    timeNow(),
 		ExpiresAt:    timeNow().Add(a.sandboxTTL),
 		TemplateSlug: tmpl.Slug,
 	}
-
-	if err := a.store.Save(r.Context(), sb); err != nil {
+	if err := a.store.Save(ctx, sb); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	w.Header().Set("X-Sandbox-Warm-Start", fmt.Sprintf("%t", fromPool)) // useful for debugging/measuring
+	w.Header().Set("X-Sandbox-Warm-Start", fmt.Sprintf("%t", fromPool))
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	if err := json.NewEncoder(w).Encode(sb); err != nil {
-		slog.Error("failed to encode response: %v", "error", err)
+		slog.Error("failed to encode response", "error", err)
 	}
 }
 
 func (a *API) GetSandbox(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-
-	if _, err := uuid.Parse(id); err != nil {
-		http.Error(w, "sandbox not found", http.StatusNotFound)
+	id, ok := parseUUID(w, chi.URLParam(r, "id"))
+	if !ok {
 		return
 	}
-
 	sb, err := a.store.Get(r.Context(), id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -109,36 +142,10 @@ func (a *API) GetSandbox(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "sandbox not found", http.StatusNotFound)
 		return
 	}
-
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(sb); err != nil {
-		slog.Error("failed to encode response: %v", "error", err)
+		slog.Error("failed to encode response", "error", err)
 	}
-}
-
-func (a *API) DeleteSandbox(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	sb, err := a.store.Get(r.Context(), id)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	if sb == nil {
-		http.Error(w, "sandbox not found", http.StatusNotFound)
-		return
-	}
-
-	if err := a.sm.KillSandbox(r.Context(), sb.ContainerID); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	if err := a.store.Delete(r.Context(), id); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
 }
 
 func (a *API) ListSandboxes(w http.ResponseWriter, r *http.Request) {
@@ -147,30 +154,66 @@ func (a *API) ListSandboxes(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if sandboxes == nil {
-		http.Error(w, "sandboxes not found", http.StatusNotFound)
-		return
-	}
-
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(sandboxes); err != nil {
-		slog.Error("failed to encode response: %v", "error", err)
+		slog.Error("failed to encode response", "error", err)
 	}
 }
 
-func (a *API) ExecCommand(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
+func (a *API) DeleteSandbox(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseUUID(w, chi.URLParam(r, "id"))
+	if !ok {
+		return
+	}
 	sb, err := a.store.Get(r.Context(), id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-
 	if sb == nil {
 		http.Error(w, "sandbox not found", http.StatusNotFound)
 		return
 	}
 
+	if err := a.sb.KillSandbox(r.Context(), sb.ID); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := a.store.Delete(r.Context(), id); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (a *API) ListTemplates(w http.ResponseWriter, r *http.Request) {
+	templates, err := a.store.ListTemplate(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(templates); err != nil {
+		slog.Error("failed to encode response", "error", err)
+	}
+}
+
+// --- Exec & files ---
+
+func (a *API) ExecCommand(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseUUID(w, chi.URLParam(r, "id"))
+	if !ok {
+		return
+	}
+	sb, err := a.store.Get(r.Context(), id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if sb == nil {
+		http.Error(w, "sandbox not found", http.StatusNotFound)
+		return
+	}
 	if sb.Status != store.StatusRunning {
 		http.Error(w, fmt.Sprintf("sandbox is %q, not running", sb.Status), http.StatusConflict)
 		return
@@ -186,31 +229,38 @@ func (a *API) ExecCommand(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := a.sm.ExecCommand(r.Context(), sb.ContainerID, req.Cmd)
+	stdout, stderr, exitCode, err := a.sb.ExecCommand(r.Context(), sb.ID, req.Cmd)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
+	result := struct {
+		Stdout   string `json:"stdout"`
+		Stderr   string `json:"stderr"`
+		ExitCode int    `json:"exit_code"`
+	}{Stdout: stdout, Stderr: stderr, ExitCode: exitCode}
+
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(result); err != nil {
-		slog.Error("failed to encode response: %v", "error", err)
+		slog.Error("failed to encode response", "error", err)
 	}
 }
 
 func (a *API) WriteFile(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
+	id, ok := parseUUID(w, chi.URLParam(r, "id"))
+	if !ok {
+		return
+	}
 	sb, err := a.store.Get(r.Context(), id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-
 	if sb == nil {
 		http.Error(w, "sandbox not found", http.StatusNotFound)
 		return
 	}
-
 	if sb.Status != store.StatusRunning {
 		http.Error(w, fmt.Sprintf("sandbox is %q, not running", sb.Status), http.StatusConflict)
 		return
@@ -226,27 +276,27 @@ func (a *API) WriteFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := a.sm.WriteFile(r.Context(), sb.ContainerID, req.Path, []byte(req.Content)); err != nil {
+	if err := a.sb.WriteFile(r.Context(), sb.ID, req.Path, req.Content); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func (a *API) ReadFile(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
+	id, ok := parseUUID(w, chi.URLParam(r, "id"))
+	if !ok {
+		return
+	}
 	sb, err := a.store.Get(r.Context(), id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-
-	if sb != nil {
+	if sb == nil {
 		http.Error(w, "sandbox not found", http.StatusNotFound)
 		return
 	}
-
 	if sb.Status != store.StatusRunning {
 		http.Error(w, fmt.Sprintf("sandbox is %q, not running", sb.Status), http.StatusConflict)
 		return
@@ -258,32 +308,30 @@ func (a *API) ReadFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	content, err := a.sm.ReadFile(r.Context(), sb.ContainerID, path)
+	content, err := a.sb.ReadFile(r.Context(), sb.ID, path)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/octet-stream")
-	if _, err := w.Write(content); err != nil {
-		slog.Error("failed to write response: %v", "error", err)
+	if _, err := w.Write([]byte(content)); err != nil {
+		slog.Error("failed to write response", "error", err)
 	}
 }
 
-func (a *API) ListTemplates(w http.ResponseWriter, r *http.Request) {
-	templates, err := a.store.ListTemplate(r.Context())
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(templates); err != nil {
-		slog.Error("failed to encode response: %v", "error", err)
-	}
-}
+// --- Pause / resume ---
+//
+// Pause/resume is an optional backend capability (backend.Pausable) — not
+// every isolation backend can suspend and restore a sandbox. These
+// handlers check for the capability explicitly and return 501 Not
+// Implemented on a backend that lacks it, rather than assuming Docker.
 
 func (a *API) PauseSandbox(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
+	id, ok := parseUUID(w, chi.URLParam(r, "id"))
+	if !ok {
+		return
+	}
 	sb, err := a.store.Get(r.Context(), id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -298,15 +346,20 @@ func (a *API) PauseSandbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	imageID, err := a.sm.PauseSandbox(r.Context(), sb.ContainerID)
+	pausable, ok := backend.AsPausable(a.sb)
+	if !ok {
+		http.Error(w, "pause/resume is not supported on the active isolation backend", http.StatusNotImplemented)
+		return
+	}
+
+	pauseRef, err := pausable.PauseSandbox(r.Context(), sb.ID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	sb.Status = store.StatusPaused
-	sb.PausedImageID = &imageID
-	sb.ContainerID = "" // this is consider as no live contaier while paused
+	sb.PausedImageID = &pauseRef
 	sb.ExpiresAt = timeNow().Add(a.pausedTTL)
 
 	if err := a.store.Save(r.Context(), sb); err != nil {
@@ -316,12 +369,15 @@ func (a *API) PauseSandbox(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(sb); err != nil {
-		slog.Error("failed to encode response: %v", "error", err)
+		slog.Error("failed to encode response", "error", err)
 	}
 }
 
 func (a *API) ResumeSandbox(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
+	id, ok := parseUUID(w, chi.URLParam(r, "id"))
+	if !ok {
+		return
+	}
 	sb, err := a.store.Get(r.Context(), id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -336,23 +392,23 @@ func (a *API) ResumeSandbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if sb.PausedImageID == nil {
-		http.Error(w, "sandbox is paused but has no associated image - inconsisten state", http.StatusInternalServerError)
+		http.Error(w, "sandbox is paused but has no pause reference recorded — inconsistent state", http.StatusInternalServerError)
 		return
 	}
 
-	if sb.PausedImageID == nil {
-		http.Error(w, "sandbox is paued but has no associated image", http.StatusInternalServerError)
+	pausable, ok := backend.AsPausable(a.sb)
+	if !ok {
+		http.Error(w, "pause/resume is not supported on the active isolation backend", http.StatusNotImplemented)
 		return
 	}
-	oldImageID := *sb.PausedImageID
 
-	newContainerID, err := a.sm.ResumeSandbox(r.Context(), oldImageID)
-	if err != nil {
+	pauseRef := *sb.PausedImageID
+
+	if err := pausable.ResumeSandbox(r.Context(), sb.ID, pauseRef); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	sb.ContainerID = newContainerID
 	sb.Status = store.StatusRunning
 	sb.PausedImageID = nil
 	sb.ExpiresAt = timeNow().Add(a.sandboxTTL)
@@ -362,16 +418,18 @@ func (a *API) ResumeSandbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// clean-up the non-unneeded snapshot image in the background
-	// dont block the response on it, and a failure there shouldn't fail the resume
-	go func() {
-		if err := a.sm.RemoveImage(context.Background(), oldImageID); err != nil {
-			slog.Error("failed to clean up paused image %s: %v", "image_id", oldImageID, "error", err)
-		}
-	}()
+	// Best-effort cleanup of the now-unneeded pause resource, if the
+	// backend supports it. Failure here doesn't fail the resume itself.
+	if cleaner, ok := backend.AsImageCleaner(a.sb); ok {
+		go func() {
+			if err := cleaner.RemoveImage(context.Background(), pauseRef); err != nil {
+				slog.Error("failed to clean up pause resource after resume", "pause_ref", pauseRef, "error", err)
+			}
+		}()
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(sb); err != nil {
-		slog.Error("failed to encode response: %v", "error", err)
+		slog.Error("failed to encode response", "error", err)
 	}
 }
