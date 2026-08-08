@@ -141,9 +141,23 @@ func (a *BackendAdapter) RemoveImage(ctx context.Context, imageID string) error 
 
 // --- backend.WarmAdopter ---
 
-func (a *BackendAdapter) AdoptWarmResource(ctx context.Context, sandboxID, containerID string) error {
-	// The container is already running (created ahead of time by the warm
-	// pool) — just register the mapping, no provisioning needed.
-	a.register(sandboxID, containerID)
+/*
+AdoptWarmResource re-registers a warm pool's placeholder sandbox id under
+the real sandbox id chosen by the api layer. the underlying container is
+already running - no provisioning happens here, only a rename of the
+internal id->container mapping
+*/
+func (a *BackendAdapter) AdoptWarmResource(ctx context.Context, sandboxID, placeholderID string) error {
+	a.mu.Lock()
+	containerID, ok := a.containers[placeholderID]
+	if ok {
+		delete(a.containers, placeholderID)
+		a.containers[sandboxID] = containerID
+	}
+	a.mu.Unlock()
+
+	if !ok {
+		return fmt.Errorf("no container mapped for warm placeholder %s", placeholderID)
+	}
 	return nil
 }
