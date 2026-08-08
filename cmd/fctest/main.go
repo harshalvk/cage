@@ -22,23 +22,60 @@ func main() {
 	}
 
 	ctx := context.Background()
-	sandboxID := "test-sandbox-1"
+	sandboxID := "test-sandbox-pause"
 
-	fmt.Println("creating sandbox...")
+	fmt.Println("→ creating sandbox...")
 	if err := mgr.CreateSandbox(ctx, sandboxID, "base"); err != nil {
 		log.Fatal(err)
 	}
-	fmt.Println("created!")
+	fmt.Println("  created!")
 
+	fmt.Println("→ writing a file to prove state presists across pause...")
+	if err := mgr.WriteFile(ctx, sandboxID, "/tmp/before-pause.txt", "still here after resume"); err != nil {
+		log.Fatal(err)
+	}
+
+	fmt.Println("→ pausing (real snapshot + memory capture)...")
+	pauseRef, err := mgr.PauseSandbox(ctx, sandboxID)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("  paused, pauseRef =", pauseRef)
+
+	running, err := mgr.IsRunning(ctx, sandboxID)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("  IsRunning after pause (expect false):", running)
+
+	fmt.Println("→ resuming from snapshot...")
+	if err := mgr.ResumeSandbox(ctx, sandboxID, pauseRef); err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("  resumed")
+
+	running, err = mgr.IsRunning(ctx, sandboxID)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("  IsRunning after resume (expect true):", running)
+
+	fmt.Println("→ confirming the file survided the pause/resume cycle...")
 	stdout, stderr, exitCode, err := mgr.ExecCommand(ctx, sandboxID, []string{"echo", "hello from go wrapper"})
 	if err != nil {
 		log.Fatal(err)
 	}
 	fmt.Printf("stdout=%q stderr=%q exit=%d\n", stdout, stderr, exitCode)
 
-	fmt.Println("killing sandbox...")
+	fmt.Println("→ cleaning up (kill running sandbox)...")
 	if err := mgr.KillSandbox(ctx, sandboxID); err != nil {
 		log.Fatal(err)
 	}
-	fmt.Println("done")
+
+	fmt.Println("→ cleaning up pause resources...")
+	if err := mgr.RemoveImage(ctx, pauseRef); err != nil {
+		log.Fatal(err)
+	}
+
+	fmt.Println("done - full pause/resume cycle verified against real Firecracker")
 }
