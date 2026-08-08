@@ -402,13 +402,18 @@ func (m *FirecrackerManager) ResumeSandbox(ctx context.Context, sandboxID, pause
 
 	api := m.newAPI(apiSocket)
 
-	// the host-side vsock UDS must be (re-)configured before loading the
-	// snapshot - it's host-only construct, not part of the vm's own
-	// saved state, so a fresh process always needs it set explicitly
-	if err := api.setVsock(ctx, 3, vsockUDS); err != nil {
+	if err := api.loadSnapshot(ctx, manifest.SnapshotPath, manifest.MemFilePath); err != nil {
 		killProcess(process)
 		return fmt.Errorf("failed to load snapshot: %w", err)
 	}
+
+	// the host-side vsock UDS must be (re-)configured before loading the
+	// snapshot - it's host-only construct, not part of the vm's own
+	// saved state, so a fresh process always needs it set explicitly
+	// if err := api.setVsock(ctx, 3, vsockUDS); err != nil {
+	// 	killProcess(process)
+	// 	return fmt.Errorf("failed to load snapshot: %w", err)
+	// }
 
 	vsock := m.newVsock(vsockUDS)
 	// the guest was already booted and running before it was paused, so
