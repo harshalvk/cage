@@ -16,6 +16,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+type unpausableBackend struct{}
+
 func TestListSandboxes_EmptyReturnsEmptyArray(t *testing.T) {
 	st := setupTestStore(t)
 	a := NewAPI(nil, st, 0, 0, nil)
@@ -139,4 +141,33 @@ func TestResumeSandbox_NotFound(t *testing.T) {
 	r.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusNotFound, w.Result().StatusCode)
+}
+
+func (unpausableBackend) CreateSandbox(ctx context.Context, id, ref string) error { return nil }
+func (unpausableBackend) KillSandbox(ctx context.Context, id string) error        { return nil }
+func (unpausableBackend) ExecCommand(ctx context.Context, id string, cmd []string) (string, string, int, error) {
+	return "", "", 0, nil
+}
+func (unpausableBackend) WriteFile(ctx context.Context, id, path, content string) error { return nil }
+func (unpausableBackend) ReadFile(ctx context.Context, id, path string) (string, error) {
+	return "", nil
+}
+func (unpausableBackend) IsRunning(ctx context.Context, id string) (bool, error) { return true, nil }
+
+func TestPauseSandbox_BackendDoesNotSupportPause(t *testing.T) {
+	st := setupTestStore(t)
+	ctx := context.Background()
+
+	sb := &store.Sandbox{ID: uuid.NewString(), ContainerID: "c-1", Status: store.StatusRunning}
+	require.NoError(t, st.Save(ctx, sb))
+
+	a := NewAPI(unpausableBackend{}, st, 0, 0, nil)
+	r := chi.NewRouter()
+	r.Post("/sandboxes/{id}/pause", a.PauseSandbox)
+
+	req := httptest.NewRequest(http.MethodPost, "/sandboxes/"+sb.ID+"/pause", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusNotImplemented, w.Result().StatusCode)
 }

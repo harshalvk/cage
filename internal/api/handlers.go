@@ -321,12 +321,6 @@ func (a *API) ReadFile(w http.ResponseWriter, r *http.Request) {
 // Implemented on a backend that lacks it, rather than assuming Docker.
 
 func (a *API) PauseSandbox(w http.ResponseWriter, r *http.Request) {
-	pausable, ok := backend.AsPausable(a.sb)
-	if !ok {
-		http.Error(w, "pause/resume is not supported on the active isolation backend", http.StatusNotImplemented)
-		return
-	}
-
 	id, ok := parseUUID(w, chi.URLParam(r, "id"))
 	if !ok {
 		return
@@ -342,6 +336,12 @@ func (a *API) PauseSandbox(w http.ResponseWriter, r *http.Request) {
 	}
 	if sb.Status != store.StatusRunning {
 		http.Error(w, fmt.Sprintf("cannot pause sandbox in status %q", sb.Status), http.StatusConflict)
+		return
+	}
+
+	pausable, ok := backend.AsPausable(a.sb)
+	if !ok {
+		http.Error(w, "pause/resume is not supported on the active isolation backend", http.StatusNotImplemented)
 		return
 	}
 
@@ -367,12 +367,6 @@ func (a *API) PauseSandbox(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) ResumeSandbox(w http.ResponseWriter, r *http.Request) {
-	pausable, ok := backend.AsPausable(a.sb)
-	if !ok {
-		http.Error(w, "pause/resume is not supported on the active isolation backend", http.StatusNotImplemented)
-		return
-	}
-
 	id, ok := parseUUID(w, chi.URLParam(r, "id"))
 	if !ok {
 		return
@@ -392,6 +386,12 @@ func (a *API) ResumeSandbox(w http.ResponseWriter, r *http.Request) {
 	}
 	if sb.PausedImageID == nil {
 		http.Error(w, "sandbox is paused but has no pause reference recorded — inconsistent state", http.StatusInternalServerError)
+		return
+	}
+
+	pausable, ok := backend.AsPausable(a.sb)
+	if !ok {
+		http.Error(w, "pause/resume is not supported on the active isolation backend", http.StatusNotImplemented)
 		return
 	}
 
