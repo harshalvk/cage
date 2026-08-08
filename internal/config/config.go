@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -54,13 +55,13 @@ func LoadConfig() (*Config, error) {
 		return nil, fmt.Errorf("DATABASE_URL is required")
 	}
 
-	reaperInterval, err := time.ParseDuration(getEnv("REAPER_INTERVAL", "30s"))
+	reaperInterval, err := time.ParseDuration(strings.TrimSpace(getEnv("REAPER_INTERVAL", "30s")))
 	if err != nil {
 		return nil, fmt.Errorf("invalid REAPER_INTERVAL: %w", err)
 	}
 	cfg.ReaperInterval = reaperInterval
 
-	sandboxTTL, err := time.ParseDuration(getEnv("SANDBOX_TTL", "1h"))
+	sandboxTTL, err := time.ParseDuration(strings.TrimSpace(getEnv("SANDBOX_TTL", "1h")))
 	if err != nil {
 		return nil, fmt.Errorf("invalid SANDBOX_TTL: %w", err)
 	}
@@ -72,7 +73,7 @@ func LoadConfig() (*Config, error) {
 	}
 	cfg.WarmPoolSize = warmPoolSize
 
-	pausedTTL, err := time.ParseDuration(getEnv("PAUSED_SANDBOX_TTL", "24h"))
+	pausedTTL, err := time.ParseDuration(strings.TrimSpace(getEnv("PAUSED_SANDBOX_TTL", "24h")))
 	if err != nil {
 		return nil, fmt.Errorf("invalid PAUSED_SANDBOX_TTL: %w", err)
 	}
