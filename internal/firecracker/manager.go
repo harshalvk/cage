@@ -478,3 +478,25 @@ func removeFileIfExists(path string) {
 		slog.Warn("firecracker: failed to remove file during cleanup", "path", path, "error", err)
 	}
 }
+
+/*
+AdoptWarmResource renames a warm pool's placeholder vm to the real
+sandbox id chosen by the api layer. since FirecrackerManager already
+keys m.running by sandbox id directly (there's no separate "native id"
+concept the way docker has containerIDs), adoption is just a map key
+rename - the vm itself is untouched and keeps running
+*/
+func (m *FirecrackerManager) AdoptWarmResource(ctx context.Context, sandboxID, placeholderID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	inst, ok := m.running[placeholderID]
+	if !ok {
+		return fmt.Errorf("no running vm for warm placeholder %s", placeholderID)
+	}
+
+	delete(m.running, placeholderID)
+	inst.sandboxID = sandboxID
+	m.running[sandboxID] = inst
+	return nil
+}
