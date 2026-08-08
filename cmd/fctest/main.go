@@ -61,7 +61,7 @@ func main() {
 	fmt.Println("  IsRunning after resume (expect true):", running)
 
 	fmt.Println("→ confirming the file survided the pause/resume cycle...")
-	stdout, stderr, exitCode, err := mgr.ExecCommand(ctx, sandboxID, []string{"echo", "hello from go wrapper"})
+	stdout, stderr, exitCode, err := mgr.ExecCommand(ctx, sandboxID, []string{"cat", "/tmp/before-pause.txt"})
 	if err != nil {
 		log.Fatal(err)
 	}
